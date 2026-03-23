@@ -1,0 +1,9 @@
+project:
+  output-dir: _docs
+
+website:
+  title: "vpseasy"
+  site-url: "https://vedicreader.github.io/vpseasy"
+  description: "create resources, deploy code in prod and dev. supports hetzner and multipass"
+  repo-branch: main
+  repo-url: "https://github.com/vedicreader/vpseasy"

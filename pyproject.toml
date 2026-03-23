@@ -1,0 +1,44 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "vpseasy"
+dynamic = ["version"]
+description = "create resources, deploy code in prod and dev. supports hetzner and multipass"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "Apache-2.0"}
+authors = [{name = "Karthik", email = "karthik.rajgopal@hotmail.com"}]
+keywords = ['nbdev']
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+]
+dependencies = [
+    "dockeasy>=0.0.3",
+    "fastcloudinit>=0.0.5",
+    "fastcore>=1.12.31",
+    "hcloud>=2.17.0",
+]
+
+[project.urls]
+Repository = "https://github.com/vedicreader/vpseasy"
+Documentation = "https://vedicreader.github.io/vpseasy/"
+
+[project.entry-points.nbdev]
+vpseasy = "vpseasy._modidx:d"
+
+[tool.hatch.version]
+path = "vpseasy/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["vpseasy"]
+
+[tool.nbdev]
+
+[dependency-groups]
+dev = [
+    "nbdev>=3.0.12",
+    "notebook>=7.5.5",
+]
