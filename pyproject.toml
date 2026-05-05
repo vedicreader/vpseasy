@@ -37,8 +37,15 @@ packages = ["vpseasy"]
 
 [tool.nbdev]
 
+[tool.hatch.build.targets.sdist]
+include = [
+    "/vpseasy",
+    "/README.md",
+    "/pyproject.toml",
+]
 [dependency-groups]
 dev = [
+    "koshas>=0.0.9",
     "nbdev>=3.0.12",
     "notebook>=7.5.5",
 ]
