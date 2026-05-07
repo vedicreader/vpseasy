@@ -2,6 +2,11 @@
 
 <!-- do not remove -->
 
+## 0.0.3
+vpseasy fixes
+
+
+
 ## 0.0.2
 rsync, skill and smaller package
 
