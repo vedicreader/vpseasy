@@ -31,8 +31,27 @@ mi = multi_init(_vm, docker=False)   # docker=False: skip install+reboot, much f
 print(mi.yaml)
 ```
 
+    #cloud-config
+    hostname: testvm
+    preserve_hostname: false
+    packages:
+    - curl
+    package_update: true
+    package_upgrade: true
+    disable_root: true
+    ssh_pwauth: false
+    users:
+    - name: deploy
+      groups:
+      - sudo
+      shell: /bin/bash
+      sudo:
+      - ALL=(ALL) NOPASSWD:ALL
+      ssh_authorized_keys:
+      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA8djqnLMaZGgYVtiPJCGtDutbid1rnHNuExJolxyXST 71293@MELMAC-71293
+
 ``` python
-ci = vps_init('demo-prod', pub_keys)
+ci = vps_init('demo-prod')
 print(ci.yaml)
 ```
 
@@ -55,10 +74,7 @@ print(ci.yaml)
       sudo:
       - ALL=(ALL) NOPASSWD:ALL
       ssh_authorized_keys:
-      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAcfGCEzt9TJzVOBmlzU4N8LvLKQxUQQ/mIikwArFO1K karthikrajgopal.laxminaarayanan@bain.com
-      - ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQDM9kAjDCitQvl6oMLab4yK7LgylUV9lo/M/U8uqi5r8LPbo/qia7Oaj+Qo2LSs+Hsesr/mdKNjFle5DRb91k/Ns4GX2V8QyBcKwBK0Davjmj57X+4ZfnmC4HjZ/gzyYe1hV4Vjy4IBE/JSArSP3hI8tCAgN00tNLxJ5AJnYzdgfKpVa+zI54cdrJTPhko12mEyOih62xOWeHT16Y7jGPIaOzPo2YTFM+omwEm7TfyxuRLxaDN0d/ZxlKPi/+vBcuAOItrjA6DJ7lnYwk3cXubCKgHP3uc0MeBBX74S58zpoHlAp6XdePKOoBwam1/aYm+7zq+9GJyDGV25iD9bDwSn+0oNexJFRgQxwFdIwVUk4Iyq6OocUNLX8vrI1Qr6kXIchDVS922LGf+Z5aai89wqaxLLB+U4+dNTzb6zKMtQSMdGrgFZt0N5j/aMuRE5rkfWoeiCT8DmekuxA6NDaF76CYgcIsEaOsCTuNjwrpWBQnQ82r20tfegagT3Y38xBp9PLbFHbM45HkjAsOyT6QqXh8C6XofZJa/QL25uCTHQBBxZCVtYPccs6Sjh4u7zJ3cAH1E7tWgpzwFeBrgBMLIJ0Atwbp4fCqAm1XHyaLaeuVceFk3YXbCUK8DmN0FApkzlxpeCwHQ2ZLUOF5HExYSC2IoHYbYJl8oyhwG8Bwe9hQ== karthik.rajgopal@hotmail.com
-      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICOEkEHB+WPV42E9izurjWdTrBAHpgDxK5JcdzhkmN7T karthik.rajgopal@hotmail.com
-      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKu2Oi3apJsaZmO3dubl+8ZUA7ivXJdhzILPucA8F2ag karthik.rajgopal@hotmail.com
+      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGe5xfUhopf+J8VLThytJWd1yO5ad8sWenfkoAtTtj9I 71293@MELMAC-71293
     runcmd:
     - curl -fsSL https://get.docker.com | sh
     - usermod -aG docker deploy
@@ -100,73 +116,200 @@ if your app needs Docker pre-installed (adds ~2 min for install +
 reboot).
 
 ``` python
+import tempfile
+_app = Path(tempfile.mkdtemp()) / 'myapp'
+_app.mkdir()
+(_app / 'docker-compose.yml').write_text('services:\n  app:\n    image: nginx:alpine\n')
+```
+
+    41
+
+``` python
 mp = Multipass()
-mp.rm(_vm,purge=True)   # idempotent cleanup
+try: mp.rm(_vm, purge=True)
+except: pass
 vm = mp.launch(_vm, image='24.04', cpus=1, memory='1G', disk='10G', cloud_init=mi)
 ip = mp.ip(vm.name)
 print(f'VM at {ip}, key: {vm.key}')
-deploy_mp(_vm, src='./myapp')
+```
+
+    Creating testvm  Configuring testvm  Starting testvm  Waiting for initialization to complete  Launched: testvm
+    VM at 192.168.2.56, key: /Users/71293/.ssh/testvm
+
+``` python
+deploy_mp(_vm, src=_app)
+```
+
+    Resolved SSH key from name slug: /Users/71293/.ssh/testvm
+
+    Warning: Permanently added '192.168.2.56' (ED25519) to the list of known hosts.
+
+    Ensured remote path /srv/app exists and is writable by deploy
+    Resolved SSH key from name slug: /Users/71293/.ssh/testvm
+    Running rsync: rsync -az --delete -e ssh -o StrictHostKeyChecking=accept-new -i /Users/71293/.ssh/testvm /var/folders/kg/9vdw4mdd1fs58svgh4k1qhr09x7dqh/T/tmp8vrta37_/myapp/ deploy@192.168.2.56:/srv/app/
+    Rsync completed successfully
+    Resolved SSH key from name slug: /Users/71293/.ssh/testvm
+
+``` python
 mp.rm(_vm)
 ```
 
-    Creating testvm  Configuring testvm  Starting testvm  Waiting for initialization to complete  
-
-    launch failed: The following errors occurred:
-    timed out waiting for initialization to complete
-
-    CalledProcessError: Command '['multipass', 'launch', '24.04', '-n', 'testvm', '-c', '1', '-m', '1G', '-d', '10G', '--cloud-init', '-']' returned non-zero exit status 2.
-    [31m---------------------------------------------------------------------------[39m
-    [31mCalledProcessError[39m                        Traceback (most recent call last)
-    [36mCell[39m[36m [39m[32mIn[6][39m[32m, line 4[39m
-    [32m      1[39m [38;5;66;03m#| eval: False[39;00m
-    [32m      2[39m mp = Multipass()
-    [32m      3[39m mp.rm(_vm,purge=[38;5;28;01mTrue[39;00m)   [38;5;66;03m# idempotent cleanup[39;00m
-    [32m----> [39m[32m4[39m vm = mp.launch(_vm, image=[33m'24.04'[39m, cpus=[32m1[39m, memory=[33m'1G'[39m, disk=[33m'10G'[39m, cloud_init=mi)
-    [32m      5[39m ip = mp.ip(vm.name)
-    [32m      6[39m print(f'VM at {ip}, key: {vm.key}')
-    [32m      7[39m deploy_mp(_vm, src=[33m'./myapp'[39m)
-
-    [36mFile [39m[32m~/code/personal/orgs/vpseasy/vpseasy/core.py:29[39m, in [36mMultipass.launch[39m[34m(self, name, image, cpus, memory, disk, cloud_init, mounts)[39m
-    [32m     27[39m [38;5;28;01mfor[39;00m hp, vp [38;5;129;01min[39;00m (mounts [38;5;129;01mor[39;00m {}).items(): args += [[33m'[39m[33m--mount[39m[33m'[39m, [33mf[39m[33m'[39m[38;5;132;01m{[39;00mhp[38;5;132;01m}[39;00m[33m:[39m[38;5;132;01m{[39;00mvp[38;5;132;01m}[39;00m[33m'[39m]
-    [32m     28[39m [38;5;28;01mif[39;00m cloud_init: args += [[33m'[39m[33m--cloud-init[39m[33m'[39m, [33m'[39m[33m-[39m[33m'[39m]
-    [32m---> [39m[32m29[39m [30;43msubprocess[39;49m[30;43m.[39;49m[30;43mrun[39;49m[30;43m([39;49m[30;43margs[39;49m[30;43m,[39;49m[30;43m [39;49m[30;43minput[39;49m[30;43m=[39;49m[30;43mcloud_init[39;49m[30;43m.[39;49m[30;43myaml[39;49m[30;43m [39;49m[30;43;01mif[39;49;00m[30;43m [39;49m[30;43mcloud_init[39;49m[30;43m [39;49m[30;43;01melse[39;49;00m[30;43m [39;49m[30;43;01mNone[39;49;00m[30;43m,[39;49m[30;43m [39;49m[30;43mtext[39;49m[30;43m=[39;49m[30;43;01mTrue[39;49;00m[30;43m,[39;49m[30;43m [39;49m[30;43mcheck[39;49m[30;43m=[39;49m[30;43;01mTrue[39;49;00m[30;43m)[39;49m
-    [32m     30[39m [38;5;28;01mreturn[39;00m AttrDict(name=name, key=cloud_init.key [38;5;28;01mif[39;00m cloud_init [38;5;28;01melse[39;00m [38;5;28;01mNone[39;00m)
-
-    [36mFile [39m[32m~/Library/Application Support/uv/python/cpython-3.13.1-macos-aarch64-none/lib/python3.13/subprocess.py:577[39m, in [36mrun[39m[34m(input, capture_output, timeout, check, *popenargs, **kwargs)[39m
-    [32m    575[39m     retcode = process.poll()
-    [32m    576[39m     [38;5;28;01mif[39;00m check [38;5;129;01mand[39;00m retcode:
-    [32m--> [39m[32m577[39m         [38;5;28;01mraise[39;00m CalledProcessError(retcode, process.args,
-    [32m    578[39m                                  output=stdout, stderr=stderr)
-    [32m    579[39m [38;5;28;01mreturn[39;00m CompletedProcess(process.args, retcode, stdout, stderr)
-
-    [31mCalledProcessError[39m: Command '['multipass', 'launch', '24.04', '-n', 'testvm', '-c', '1', '-m', '1G', '-d', '10G', '--cloud-init', '-']' returned non-zero exit status 2.
-
-## Provision on Hetzner
+## Provision and deploy on Hetzner
 
 Set `HCLOUD_TOKEN` in your environment.
-[`vps_init()`](https://vedicreader.github.io/vpseasy/core.html#vps_init)
-auto-generates an SSH key pair when `pub_keys=None`.
+[`hetzner_deploy()`](https://vedicreader.github.io/vpseasy/core.html#hetzner_deploy)
+provisions the server, waits for cloud-init, and deploys in one call.
+It’s idempotent — re-running against an existing server just redeploys.
 
 ``` python
-hz = Hetzner()                              # reads HCLOUD_TOKEN
-ci = vps_init('myapp-prod', pub_keys)
-svr = hz.create('myapp-prod', cloud_init=ci, ssh_keys=hz.key_names(), location='hel1')
-print(f'Provisioning at {svr.ip}')
+hz = Hetzner()
+svr = hetzner_deploy('myapp-prod',_app, hz) # hz is not required
+print(f'Deployed at {svr.name}, key: {svr.key}')
 ```
 
-## Deploy
+    Server myapp-prod provisioning at 65.21.147.20 ...
+    SSH check succeeded: 
+    cloud-init status: running
+    cloud-init status: unknown
+    cloud-init status: unknown
+    cloud-init status: unknown
+    cloud-init status: unknown
+    cloud-init status: running
+    cloud-init status: running
+    cloud-init status: running
+    cloud-init status: running
+    cloud-init status: running
+    cloud-init status: running
+    cloud-init status: unknown
+    cloud-init status: unknown
+    cloud-init status: unknown
+    cloud-init status: done
+    Ensured remote path /srv/app exists and is writable by deploy
+    Running rsync: rsync -az --delete -e ssh -o StrictHostKeyChecking=accept-new -i /Users/71293/.ssh/myapp-prod /var/folders/kg/9vdw4mdd1fs58svgh4k1qhr09x7dqh/T/tmplfmfw3uz/myapp/ deploy@65.21.147.20:/srv/app/
+    Rsync completed successfully
+    Docker info: Client: Docker Engine - Community
+     Version:    29.4.3
+     Context:    default
+     Debug Mode: false
+     Plugins:
+      buildx: Docker Buildx (Docker Inc.)
+        Version:  v0.33.0
+        Path:     /usr/libexec/docker/cli-plugins/docker-buildx
+      compose: Docker Compose (Docker Inc.)
+        Version:  v5.1.3
+        Path:     /usr/libexec/docker/cli-plugins/docker-compose
+      model: Docker Model Runner (Docker Inc.)
+        Version:  v1.1.37
+        Path:     /usr/libexec/docker/cli-plugins/docker-model
 
-[`wait_ssh()`](https://vedicreader.github.io/vpseasy/core.html#wait_ssh)
-blocks until SSH is up.
-[`deploy()`](https://vedicreader.github.io/vpseasy/core.html#deploy)
-rsyncs your Compose stack and brings it up.
+    Server:
+     Containers: 0
+      Running: 0
+      Paused: 0
+      Stopped: 0
+     Images: 0
+     Server Version: 29.4.3
+     Storage Driver: overlayfs
+      driver-type: io.containerd.snapshotter.v1
+     Logging Driver: json-file
+     Cgroup Driver: systemd
+     Cgroup Version: 2
+     Plugins:
+      Volume: local
+      Network: bridge host ipvlan macvlan null overlay
+      Log: awslogs fluentd gcplogs gelf journald json-file local splunk syslog
+     CDI spec directories:
+      /etc/cdi
+      /var/run/cdi
+     Swarm: inactive
+     Runtimes: runc io.containerd.runc.v2
+     Default Runtime: runc
+     Init Binary: docker-init
+     containerd version: 77c84241c7cbdd9b4eca2591793e3d4f4317c590
+     runc version: v1.3.5-0-g488fc13e
+     init version: de40ad0
+     Security Options:
+      apparmor
+      seccomp
+       Profile: builtin
+      cgroupns
+     Kernel Version: 6.8.0-111-generic
+     Operating System: Ubuntu 24.04.4 LTS
+     OSType: linux
+     Architecture: x86_64
+     CPUs: 2
+     Total Memory: 3.73GiB
+     Name: myapp-prod
+     ID: a8429b9a-7a14-49fa-9ee8-c18e71b015ac
+     Docker Root Dir: /var/lib/docker
+     Debug Mode: false
+     Experimental: false
+     Insecure Registries:
+      ::1/128
+      127.0.0.0/8
+     Live Restore Enabled: false
+     Firewall Backend: iptables
+
+     Image nginx:alpine Pulling 
+     612c0c1df4c5 Pulling fs layer 0B
+     aee4e54b3865 Pulling fs layer 0B
+     781ff50d2644 Pulling fs layer 0B
+     82736a35d0e7 Pulling fs layer 0B
+     453da7dbc73e Pulling fs layer 0B
+     583599bb7d38 Pulling fs layer 0B
+     4a8b0b2a5b19 Pulling fs layer 0B
+     6a0ac1617861 Pulling fs layer 0B
+     e8fc446e336c Download complete 0B
+     6192e1e6a438 Download complete 0B
+     6a0ac1617861 Downloading 2.097MB
+     781ff50d2644 Download complete 0B
+     612c0c1df4c5 Downloading 4.194MB
+     6a0ac1617861 Download complete 0B
+     aee4e54b3865 Download complete 0B
+     453da7dbc73e Download complete 0B
+     4a8b0b2a5b19 Download complete 0B
+     583599bb7d38 Download complete 0B
+     6a0ac1617861 Extracting 1B
+     82736a35d0e7 Download complete 0B
+     612c0c1df4c5 Downloading 11.53MB
+     6a0ac1617861 Extracting 1B
+     612c0c1df4c5 Download complete 0B
+     6a0ac1617861 Pull complete 0B
+     82736a35d0e7 Extracting 1B
+     781ff50d2644 Pull complete 0B
+     aee4e54b3865 Pull complete 0B
+     583599bb7d38 Pull complete 0B
+     82736a35d0e7 Pull complete 0B
+     453da7dbc73e Pull complete 0B
+     4a8b0b2a5b19 Pull complete 0B
+     612c0c1df4c5 Extracting 1B
+     612c0c1df4c5 Extracting 1B
+     612c0c1df4c5 Extracting 1B
+     612c0c1df4c5 Extracting 1B
+     612c0c1df4c5 Pull complete 0B
+     Image nginx:alpine Pulled 
+     Network app_default Creating 
+     Network app_default Created 
+     Container app-app-1 Creating 
+     Container app-app-1 Created 
+     Container app-app-1 Starting 
+
+    docker compose deployed with build
+    Deployed at myapp-prod, key: /Users/71293/.ssh/myapp-prod
+
+     Container app-app-1 Started 
 
 ``` python
-wait_ssh(svr.ip, tout=300)
-assert chk_cloud_init(svr.ip) == 'done'
-assert chk_docker(svr.ip)
-deploy('./myapp', svr.ip)
+o = lambda: [s['name'] for s in hz.servers()]
+print('servers: ', o())
+hz.delete('myapp-prod')
+print('Deleted server.')
+print('servers', o())
 ```
+
+    servers:  ['vedicreader-cx32-hel', 'myapp-prod']
+    Deleted server.
+    servers ['vedicreader-cx32-hel']
 
 ## Install agent skill
 
@@ -174,8 +317,10 @@ Copies `SKILL.md` to `.agents/skills/vpseasy/` (project-local) and
 `~/.claude/skills/vpseasy/` (global Claude Code).
 
 ``` python
-mv_skill_md(dry_run=True)   # preview; pass dry_run=False to actually install
+mv_skill_md(dry_run=True)
 ```
+
+    Would copy to: ['.agents/skills/vpseasy/SKILL.md', '/Users/71293/.claude/skills/vpseasy/SKILL.md']
 
 ## API reference
 
@@ -188,7 +333,9 @@ mv_skill_md(dry_run=True)   # preview; pass dry_run=False to actually install
 | [`Multipass`](https://vedicreader.github.io/vpseasy/core.html#multipass) | Launch / list / exec / delete local Ubuntu VMs |
 | `deploy_mp(name, src, path, build)` | Sync dir + `docker compose up` in Multipass VM |
 | [`Hetzner`](https://vedicreader.github.io/vpseasy/core.html#hetzner) | Create / list / delete Hetzner Cloud servers |
+| `hetzner_deploy(name, src, ...)` | Full pipeline: provision → wait → deploy (idempotent) |
 | `wait_ssh(host, u, k, tout)` | Poll until SSH accepts connections |
+| `wait_ready(host, u, k, tout)` | Poll SSH then cloud-init until done |
 | `chk_cloud_init(host, u, k)` | Return `cloud-init status` string |
 | `chk_docker(host, u, k)` | Verify Docker daemon running |
 | `run_ssh(host, *cmds, ...)` | Run commands over SSH |

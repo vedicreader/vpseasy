@@ -27,12 +27,14 @@ export HCLOUD_TOKEN=your_token   # required for Hetzner
 | `Multipass().launch(name, image, ...)` | `AttrDict(name, key)` | Spin up a local Ubuntu VM |
 | `Multipass().ip(name)` | `str` | Get VM IPv4 |
 | `Multipass().rm(name)` | `None` | Delete + purge VM |
-| `deploy_mp(name, src, path, build)` | `str` | Rsync + `docker compose up` inside Multipass VM |
+| `deploy_mp(name, src, path, build)` | `None` | Rsync + `docker compose up` inside Multipass VM |
 | `Hetzner().create(name, ...)` | `AttrDict(ip, name, key, resp)` | Provision Hetzner VPS |
 | `Hetzner().servers()` | `list[dict]` | List servers `[{name, ip, status}]` |
 | `Hetzner().delete(name)` | `None` | Delete server |
-| `Hetzner().key_names()` | `list[str]` | SSH key names registered in Hetzner |
+| `Hetzner().key_names()` | `list[str]` | SSH key names registered in Hetzner (root access only) |
+| `hetzner_deploy(name, src, ...)` | `AttrDict(ip, name, key)` | Full pipeline: provision → wait → deploy (idempotent) |
 | `wait_ssh(host, u, k, tout)` | `True` | Poll until SSH is up |
+| `wait_ready(host, u, k, tout, retries)` | `True` | Poll SSH then cloud-init until done; retries on timeout |
 | `chk_cloud_init(host, u, k)` | `str` | `done\|running\|error\|unknown` |
 | `chk_docker(host, u, k)` | `bool` | Verify Docker daemon running |
 | `run_ssh(host, *cmds, user, key, capture)` | `str\|CompletedProcess` | Run commands over SSH |
@@ -56,15 +58,28 @@ mp.rm('testvm')
 
 ### Hetzner production deploy
 
+`hetzner_deploy` is idempotent — re-running against an existing server skips provisioning and goes straight to cloud-init check + deploy.
+
 ```python
 from vpseasy.core import *
-pub_keys = load_pub_keys()
-ci = vps_init('myapp-prod', pub_keys)   # AttrDict(yaml, key=None when pub_keys given)
 hz = Hetzner()                          # reads HCLOUD_TOKEN
-svr = hz.create('myapp-prod', cloud_init=ci, ssh_keys=hz.key_names(), location='hel1')
-wait_ssh(svr.ip, tout=300)
-assert chk_cloud_init(svr.ip) == 'done'
-deploy('./myapp', svr.ip)
+svr = hetzner_deploy('myapp-prod', './myapp', hz=hz, location='hel1')
+print(f'Deployed at {svr.ip}, key: {svr.key}')
+```
+
+### Lower-level Hetzner flow
+
+Use `vps_init` + `Hetzner.create` + `wait_ready` + `deploy` when you need more control:
+
+```python
+from vpseasy.core import *
+hz = Hetzner()
+ci = vps_init('myapp-prod')             # auto-generates ~/.ssh/myapp-prod key pair
+svr = hz.create('myapp-prod', cloud_init=ci, location='hel1')
+# NOTE: do not pass ssh_keys= together with cloud_init= — they are conflicting strategies.
+# ssh_keys injects into root only; cloud_init creates a deploy user with its own key.
+wait_ready(svr.ip, k=svr.key, tout=600)
+deploy(svr.ip, './myapp', key=svr.key)
 ```
 
 ### Install this skill
@@ -73,10 +88,27 @@ deploy('./myapp', svr.ip)
 mv_skill_md(dry_run=False)   # writes to .agents/skills/vpseasy/ and ~/.claude/skills/vpseasy/
 ```
 
+## SSH key resolution
+
+`_resolve_key` resolves the SSH key in this order:
+
+1. Explicit `key=` path argument
+2. `name=` slug → `~/.ssh/<name>` (raises `FileNotFoundError` if missing)
+3. `SSH_KEY_PATH` environment variable
+4. `SSH_PRIVATE_KEY` environment variable (PEM string, written to `/tmp/.vpseasy_<uid>.pem`)
+5. `None` (falls back to SSH agent)
+
 ## Env vars
 
 | Var | Used by | Notes |
 |-----|---------|-------|
-| `HCLOUD_TOKEN` | `Hetzner()` | Required |
-| `SSH_KEY_PATH` | `_resolve_key()` | Optional path override |
+| `HCLOUD_TOKEN` | `Hetzner()` | Required for Hetzner |
+| `SSH_KEY_PATH` | `_resolve_key()` | Optional explicit key path |
 | `SSH_PRIVATE_KEY` | `_resolve_key()` | PEM string, written to `/tmp/.vpseasy_<uid>.pem` |
+
+## Gotchas
+
+- `ssh_keys` on `Hetzner.create()` injects into the **root** user only — not the `deploy` user created by cloud-init. Passing both `ssh_keys` and `cloud_init` raises `ValueError`.
+- `cloud-init status` returns exit code 2 ("done with warnings") on Ubuntu 24.04 — `chk_cloud_init` uses `check=False` to handle this correctly.
+- SSH `StrictHostKeyChecking=accept-new` silently accepts new hosts but rejects changed host keys. `hetzner_deploy` runs `ssh-keygen -R <ip>` after provisioning to clear stale `known_hosts` entries when an IP is reused.
+- Always use the private key path (no `.pub`) with `-i`. The public key is for `authorized_keys`, not for SSH client auth.
