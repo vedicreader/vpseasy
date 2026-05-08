@@ -2,6 +2,11 @@
 
 <!-- do not remove -->
 
+## 0.0.4
+caddy stack
+
+
+
 ## 0.0.3
 vpseasy fixes
 
