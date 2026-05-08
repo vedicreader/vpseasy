@@ -4,12 +4,12 @@
 
 # %% auto #0
 __all__ = ['mp', 'dock_cmd', 'Multipass', 'deploy_mp', 'keygen', 'gen_key', 'vps_init', 'multi_init', 'Hetzner', 'run_ssh',
-           'sync', 'deploy', 'wait_ssh', 'chk_cloud_init', 'chk_docker', 'wait_ready', 'hetzner_deploy',
-           'load_pub_keys', 'mv_skill_md']
+           'sync', 'chk_docker', 'deploy', 'wait_ssh', 'chk_cloud_init', 'wait_ready', 'hetzner_deploy',
+           'load_pub_keys', 'vols_to_binds', 'caddy_stack', 'mv_skill_md']
 
 # %% ../nbs/00_core.ipynb #8795cffa
 import json, subprocess, time
-from dockeasy import Cli
+from dockeasy import Cli, env_get, Compose, caddy_svc, cloudflared_svc, fasthtml_app
 from fastcore.all import L, Path, run, listify, AttrDict, AttrDictDefault
 from fastcloudinit.core import cloud_init_base, cloud_init_config, user, runcmd, reboot
 from hcloud import Client
@@ -88,7 +88,7 @@ def multi_init(hostname, pub_keys=None, username='deploy', docker=True, pkgs=Non
 class Hetzner:
     'Hetzner Cloud VPS provider via hcloud Python SDK. Token read from HCLOUD_TOKEN by default.'
     def __init__(self, token=None):
-        token = token or os.environ.get('HCLOUD_TOKEN')
+        token = token or env_get('HCLOUD_TOKEN')
         if not token: raise ValueError('HCLOUD_TOKEN environment variable not set')
         self._c = Client(token=token)
 
@@ -174,14 +174,35 @@ def sync(host, src='.', path='/srv/app', user='deploy', key=None, name=None, inc
     run(cmd)
     if verbose: print('Rsync completed successfully')
 
+def chk_docker(host, u='deploy', k=None, name=None, verbose=False) -> bool:
+	'Verify docker daemon is running and user can run containers.'
+	try:
+		r = run_ssh(host, 'docker info', user=u, key=k, name=name)
+		if verbose: print(f'Docker info: {r.strip()}')
+		return True
+	except Exception as e:
+		if verbose: print(f'Docker check failed: {e}')
+		return False
+
+def _chk_compose(host, path, f='docker-compose.yml',u='deploy', k=None, name=None, verbose=False) -> bool:
+	'Check if Dockerfile exists in the remote path.'
+	try:
+		r = run_ssh(host, f'ls {path}/{f}', user=u, key=k, name=name)
+		if verbose: print(f'docker-compose check output: {r.strip()}')
+		return 'docker-compose' in r
+	except Exception as e:
+		if verbose: print(f'docker-compose check failed: {e}')
+		return False
+
 def deploy(host, src='.', path='/srv/app', user='deploy', build=True, key=None, name=None,
            include=None, exclude=None, verbose=False):
     'Sync src to host via rsync then docker compose up if docker is available'
     sync(host, src, path, user, key=key, name=name, include=include, exclude=exclude, verbose=verbose)
-    if not chk_docker(host, u=user, k=key, name=name, verbose=verbose): return
+    kw = dict(host=host, u=user, k=key, name=name, verbose=verbose)
+    if not (chk_docker(**kw) and _chk_compose(path=path,**kw)): return
     a = f'cd {path} && docker compose up -d --remove-orphans' + (' --build' if build else '')
-    run_ssh(host, a, user=user, key=key, name=name)
-    if verbose: print('docker compose deployed' + (' with build' if build else ''))
+    r = run_ssh(host, a, user=user, key=key, name=name)
+    if verbose: print('docker compose ran' + (' with build' if build else ''), '→', r.strip())
 
 # %% ../nbs/00_core.ipynb #q4e3dvg4au
 def wait_ssh(host, u='deploy', k=None, name=None, p=22, tout=300, interval=5, verbose=True):
@@ -204,15 +225,7 @@ def chk_cloud_init(host, u='deploy', k=None, name=None) -> str:
         return o.split(': ',1)[-1].strip() if ': ' in o else (o.strip() or 'unknown')
     except Exception as e: return 'Error while checking cloud init: ' + str(e)
 
-def chk_docker(host, u='deploy', k=None, name=None, verbose=False) -> bool:
-    'Verify docker daemon is running and user can run containers.'
-    try:
-        r = run_ssh(host, 'docker info', user=u, key=k, name=name)
-        if verbose: print(f'Docker info: {r.strip()}')
-        return True
-    except Exception as e:
-	    if verbose: print(f'Docker check failed: {e}')
-	    return False
+
 
 # %% ../nbs/00_core.ipynb #0d506066
 def wait_ready(host, u='deploy', k=None, name=None, tout=300, interval=5, retries=2, verbose=False):
@@ -254,6 +267,24 @@ def load_pub_keys(paths=None) -> list:
     'Load SSH public key strings. paths=None → auto-detect from ~/.ssh/id_*.pub'
     paths = paths or list(Path.home().glob('.ssh/id_*.pub'))
     return [Path(p).read_text().strip() for p in listify(paths) if Path(p).exists()]
+
+# %% ../nbs/00_core.ipynb #c46800d1
+def vols_to_binds(vols):
+    'Convert ["/app/data"] → ["./data:/app/data"] for docker compose bind mounts'
+    return [f'./{v.split("/")[-1]}:{v}' for v in listify(vols)]
+
+def caddy_stack(domain, df, vols=None, env_file='.env', cloudflared=True, root=None, conf=None, **kw):
+    '''Compose with app + caddy + optional cloudflared, web network, caddy volumes.
+    df: Dockerfile instance. root: if given, saves Dockerfile + docker-compose.yml there. **kw passed to caddy_svc.'''
+    if root: df.save(root/'Dockerfile')
+    v,env = vols_to_binds(vols) if vols else None, listify(env_file) if env_file else None
+    c = (Compose()
+         .svc('app', build=df, volumes=v, env_file=env, restart='unless-stopped', networks=['web'])
+         .svc('caddy', **caddy_svc(domain, cloudflared=cloudflared, conf=conf or root/'Caddyfile', **kw)))
+    if cloudflared: c = c.svc('cloudflared', **cloudflared_svc(url='http://caddy'))
+    c = c.network('web').volume('caddy_data').volume('caddy_config')
+    if root: c.save(root/'docker-compose.yml')
+    return c
 
 # %% ../nbs/00_core.ipynb #37f0a632
 def mv_skill_md(dry_run=True, dir=None) -> None:

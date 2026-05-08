@@ -311,6 +311,30 @@ print('servers', o())
     Deleted server.
     servers ['vedicreader-cx32-hel']
 
+## Docker Compose helpers
+
+Any app that dockeasy can build — FastHTML, FastAPI, Go, Rust, Node —
+follows the same production Compose shape when deployed behind
+Cloudflare Tunnel: an `app` service, a `caddy` reverse proxy, a
+`cloudflared` tunnel container, a shared `web` network, and two named
+volumes for Caddy state.
+
+[`caddy_stack()`](https://vedicreader.github.io/vpseasy/core.html#caddy_stack)
+generates that structure from a domain and any dockeasy Dockerfile
+object.
+[`vols_to_binds()`](https://vedicreader.github.io/vpseasy/core.html#vols_to_binds)
+converts absolute container paths to local bind mounts. The `root=`
+argument saves all three files (`Dockerfile`, `docker-compose.yml`,
+`Caddyfile`); without it the `Compose` object is returned without
+writing anything.
+
+``` python
+d = Path(tempfile.mkdtemp())
+df = fasthtml_app(pkgs=['sqlite3'], vols=['/app/data'], healthcheck='/health')
+c = caddy_stack('myapp.example.com', df, vols=['/app/data'], root=d)
+print(c)
+```
+
 ## Install agent skill
 
 Copies `SKILL.md` to `.agents/skills/vpseasy/` (project-local) and
@@ -326,14 +350,14 @@ mv_skill_md(dry_run=True)
 
 | Symbol | Description |
 |----|----|
-| `load_pub_keys(paths=None)` | Read `~/.ssh/id_*.pub` → list of strings |
-| `gen_key(slug, key_dir=None)` | Generate ed25519 pair → `AttrDict(key, pub, pub_str)` |
-| `multi_init(hostname, pub_keys, ...)` | Multipass cloud-init YAML → `AttrDict(yaml, key)` |
-| `vps_init(hostname, pub_keys, ...)` | Production cloud-init YAML → `AttrDict(yaml, key)` |
+| `load_pub_keys(paths=None)` | Read `~/.ssh/id_*.pub` -\> list of strings |
+| `gen_key(slug, key_dir=None)` | Generate ed25519 pair -\> `AttrDict(key, pub, pub_str)` |
+| `multi_init(hostname, pub_keys, ...)` | Multipass cloud-init YAML -\> `AttrDict(yaml, key)` |
+| `vps_init(hostname, pub_keys, ...)` | Production cloud-init YAML -\> `AttrDict(yaml, key)` |
 | [`Multipass`](https://vedicreader.github.io/vpseasy/core.html#multipass) | Launch / list / exec / delete local Ubuntu VMs |
 | `deploy_mp(name, src, path, build)` | Sync dir + `docker compose up` in Multipass VM |
 | [`Hetzner`](https://vedicreader.github.io/vpseasy/core.html#hetzner) | Create / list / delete Hetzner Cloud servers |
-| `hetzner_deploy(name, src, ...)` | Full pipeline: provision → wait → deploy (idempotent) |
+| `hetzner_deploy(name, src, ...)` | Full pipeline: provision -\> wait -\> deploy (idempotent) |
 | `wait_ssh(host, u, k, tout)` | Poll until SSH accepts connections |
 | `wait_ready(host, u, k, tout)` | Poll SSH then cloud-init until done |
 | `chk_cloud_init(host, u, k)` | Return `cloud-init status` string |
@@ -341,4 +365,6 @@ mv_skill_md(dry_run=True)
 | `run_ssh(host, *cmds, ...)` | Run commands over SSH |
 | `sync(host, src, path, ...)` | Rsync local dir to remote |
 | `deploy(host, src, path, ...)` | [`sync`](https://vedicreader.github.io/vpseasy/core.html#sync) + `docker compose up -d` |
+| `vols_to_binds(vols)` | `["/app/data"]` -\> `["./data:/app/data"]` for Compose bind mounts |
+| `caddy_stack(domain, df, ...)` | Compose file: app + caddy + cloudflared + web network + caddy volumes |
 | `mv_skill_md(dry_run, dir)` | Install agent SKILL.md |
