@@ -10,7 +10,7 @@ __all__ = ['mp', 'dock_cmd', 'Multipass', 'deploy_mp', 'keygen', 'gen_key', 'vps
 # %% ../nbs/00_core.ipynb #8795cffa
 import json, subprocess, time
 from dockeasy import Cli, env_get, Compose, caddy_svc, cloudflared_svc, fasthtml_app
-from fastcore.all import L, Path, run, listify, AttrDict, AttrDictDefault
+from fastcore.all import L, Path, run, listify, AttrDict, AttrDictDefault, delegates
 from fastcloudinit.core import cloud_init_base, cloud_init_config, user, runcmd, reboot
 from hcloud import Client
 from hcloud.images import Image
@@ -153,11 +153,13 @@ def _res_key(key=None, name=None):
     print('Resolved SSH key from name slug:', p)
     return str(p)
 
-def run_ssh(host, *cmds, user='deploy', key=None, name=None, port=22, check=True):
+@delegates(run, keep=True)
+def run_ssh(host, *cmds, user='deploy', key=None, name=None, port=22, check=True, verbose=False, **kwargs):
     'Run commands on remote host via SSH. Returns stdout string. check=False ignores non-zero exit codes.'
-    r = subprocess.run(_ssh(host, user, _res_key(key, name), port) + [' && '.join(cmds)],
-                       capture_output=True, text=True, check=check)
-    return r.stdout
+    r = run(_ssh(host, user, _res_key(key, name), port) + [' && '.join(cmds)], ignore_ex=not check, **kwargs)
+    if verbose: print(f'Ran SSH command on {host}: {" && ".join(cmds)} → {r}')
+    return r
+
 
 def sync(host, src='.', path='/srv/app', user='deploy', key=None, name=None, include=None, exclude=None, verbose=False):
     'Rsync local src to remote host:path. include= whitelist patterns, exclude= blacklist patterns.'
@@ -203,7 +205,7 @@ def deploy(host, src='.', path='/srv/app', user='deploy', build=True, key=None, 
     kw = dict(host=host, u=user, k=key, name=name, verbose=verbose)
     if not (chk_docker(**kw) and _chk_compose(path=path,**kw)): return
     a = f'cd {path} && docker compose up -d --remove-orphans' + (' --build' if build else '')
-    r = run_ssh(host, a, user=user, key=key, name=name)
+    r = run_ssh(host, a, user=user, key=key, name=name, verbose=verbose)
     if verbose: print('docker compose ran' + (' with build' if build else ''), '→', r.strip())
 
 
@@ -221,10 +223,10 @@ def wait_ssh(host, u='deploy', k=None, name=None, p=22, tout=300, interval=5, ve
             time.sleep(interval)
     raise TimeoutError(f'SSH to {host} not ready after {tout}s')
 
-def chk_cloud_init(host, u='deploy', k=None, name=None) -> str:
+def chk_cloud_init(host, u='deploy', k=None, name=None, verbose=True) -> str:
     'Return cloud-init status: done|running|error|unknown. check=False handles exit code 2 (done-with-warnings) on Ubuntu 24.04.'
-    o = run_ssh(host, 'sudo cloud-init status', user=u, key=k, name=name, check=False)
-    o = o.strip()
+    o = run_ssh(host, 'sudo cloud-init status', user=u, key=k, name=name, check=False, verbose=verbose)
+    o = o[1].strip()
     return o.split(': ', 1)[-1].strip() if ': ' in o else (o or 'unknown')
 
 
@@ -277,7 +279,8 @@ def vols_to_binds(vols):
 def caddy_stack(domain, df, vols=None, env_file='.env', cloudflared=True, root=None, conf=None, **kw):
     '''Compose with app + caddy + optional cloudflared, web network, caddy volumes.
     df: Dockerfile instance. root: if given, saves Dockerfile + docker-compose.yml there. **kw passed to caddy_svc.'''
-    if root: df.save(root/'Dockerfile')
+    root = Path(root if root else '.')
+    df.save(Path(root)/'Dockerfile')
     v,env = vols_to_binds(vols) if vols else None, listify(env_file) if env_file else None
     c = (Compose()
          .svc('app', build=df, volumes=v, env_file=env, restart='unless-stopped', networks=['web'])
