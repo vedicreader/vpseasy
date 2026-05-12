@@ -2,6 +2,11 @@
 
 <!-- do not remove -->
 
+## 0.0.6
+caddy stack and ssh updates
+
+
+
 ## 0.0.5
 run_ssh uses subprocess now
 
