@@ -153,9 +153,11 @@ def _res_key(key=None, name=None):
     print('Resolved SSH key from name slug:', p)
     return str(p)
 
-def run_ssh(host, *cmds, user='deploy', key=None, name=None, port=22):
-    'Run commands on remote host via SSH. capture=True returns stdout string.'
-    return run(_ssh(host, user, _res_key(key, name), port) + [' && '.join(cmds)])
+def run_ssh(host, *cmds, user='deploy', key=None, name=None, port=22, check=True):
+    'Run commands on remote host via SSH. Returns stdout string. check=False ignores non-zero exit codes.'
+    r = subprocess.run(_ssh(host, user, _res_key(key, name), port) + [' && '.join(cmds)],
+                       capture_output=True, text=True, check=check)
+    return r.stdout
 
 def sync(host, src='.', path='/srv/app', user='deploy', key=None, name=None, include=None, exclude=None, verbose=False):
     'Rsync local src to remote host:path. include= whitelist patterns, exclude= blacklist patterns.'
@@ -204,6 +206,7 @@ def deploy(host, src='.', path='/srv/app', user='deploy', build=True, key=None, 
     r = run_ssh(host, a, user=user, key=key, name=name)
     if verbose: print('docker compose ran' + (' with build' if build else ''), '→', r.strip())
 
+
 # %% ../nbs/00_core.ipynb #q4e3dvg4au
 def wait_ssh(host, u='deploy', k=None, name=None, p=22, tout=300, interval=5, verbose=True):
     'Poll SSH until connection succeeds or raises TimeoutError.'
@@ -219,12 +222,10 @@ def wait_ssh(host, u='deploy', k=None, name=None, p=22, tout=300, interval=5, ve
     raise TimeoutError(f'SSH to {host} not ready after {tout}s')
 
 def chk_cloud_init(host, u='deploy', k=None, name=None) -> str:
-    'Return cloud-init status: done|running|error|unknown. Uses check=False — exit code 2 means done-with-warnings.'
-    try:
-        o = run_ssh(host, 'sudo cloud-init status', user=u, key=k, name=name)
-        return o.split(': ',1)[-1].strip() if ': ' in o else (o.strip() or 'unknown')
-    except Exception as e: return 'Error while checking cloud init: ' + str(e)
-
+    'Return cloud-init status: done|running|error|unknown. check=False handles exit code 2 (done-with-warnings) on Ubuntu 24.04.'
+    o = run_ssh(host, 'sudo cloud-init status', user=u, key=k, name=name, check=False)
+    o = o.strip()
+    return o.split(': ', 1)[-1].strip() if ': ' in o else (o or 'unknown')
 
 
 # %% ../nbs/00_core.ipynb #0d506066
