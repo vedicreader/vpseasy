@@ -161,14 +161,14 @@ def run_ssh(host, *cmds, user='deploy', key=None, name=None, port=22, check=True
     return r
 
 
-def sync(host, src='.', path='/srv/app', user='deploy', key=None, name=None, include=None, exclude=None, verbose=False):
-    'Rsync local src to remote host:path. include= whitelist patterns, exclude= blacklist patterns.'
+def sync(host, src='.', path='/srv/app', user='deploy', key=None, name=None, include=None, exclude=None, extra=None, verbose=False):
+    'Rsync local src to remote host:path. include= whitelist patterns, exclude= blacklist patterns. extra= extra rsync flags e.g. "--checksum" or ["--ignore-times","--partial"].'
     a = f'[ -d {path} -a -w {path} ] || (sudo mkdir -p {path} && sudo chown {user}:{user} {path})'
     run_ssh(host, a, user=user, key=key, name=name)
     if verbose: print(f'Ensured remote path {path} exists and is writable by {user}')
     ssh_e = ' '.join(_ssh(host, user, _res_key(key, name), 22)[:-1])
     inc, exc = listify(include), listify(exclude)
-    cmd = ['rsync', '-az' + ('m' if inc else ''), '--delete', '-e', ssh_e]
+    cmd = ['rsync', '-az' + ('m' if inc else ''), '--delete', '-e', ssh_e, *listify(extra)]
     for p in exc: cmd += ['--exclude', p]
     if inc:
         for p in inc: cmd+=(['--include',p] if not p.endswith('/') else ['--include',p.rstrip('/'),'--include',p+'**'])
@@ -199,9 +199,9 @@ def _chk_compose(host, path, f='docker-compose.yml',u='deploy', k=None, name=Non
 		return False
 
 def deploy(host, src='.', path='/srv/app', user='deploy', build=True, key=None, name=None,
-           include=None, exclude=None, verbose=False):
-    'Sync src to host via rsync then docker compose up if docker is available'
-    sync(host, src, path, user, key=key, name=name, include=include, exclude=exclude, verbose=verbose)
+           include=None, exclude=None, extra=None, verbose=False):
+    'Sync src to host via rsync then docker compose up if docker is available. extra= extra rsync flags forwarded to sync().'
+    sync(host, src, path, user, key=key, name=name, include=include, exclude=exclude, extra=extra, verbose=verbose)
     kw = dict(host=host, u=user, k=key, name=name, verbose=verbose)
     if not (chk_docker(**kw) and _chk_compose(path=path,**kw)): return
     a = f'cd {path} && docker compose up -d --remove-orphans' + (' --build' if build else '')
@@ -247,7 +247,7 @@ def wait_ready(host, u='deploy', k=None, name=None, tout=300, interval=5, retrie
 
 # %% ../nbs/00_core.ipynb #2bf3f571
 def hetzner_deploy(name, src, hz=None, image='ubuntu-24.04', server_type='cx23', location=None,
-                   path='/srv/app', build=True, include=None, exclude=None, tout=600, retries=2, verbose=True):
+                   path='/srv/app', build=True, include=None, exclude=None, extra=None, tout=600, retries=2, verbose=True):
     'Full pipeline: provision Hetzner VPS (idempotent) → wait for cloud-init → deploy. Returns AttrDict(ip, name, key).'
     hz = hz or Hetzner()
     ex = hz._c.servers.get_by_name(name)
@@ -262,7 +262,7 @@ def hetzner_deploy(name, src, hz=None, image='ubuntu-24.04', server_type='cx23',
         subprocess.run(['ssh-keygen', '-R', ip], capture_output=True)
         if verbose: print(f'Server {name} provisioning at {ip} ...')
         wait_ready(ip, k=key, tout=tout, retries=retries, verbose=verbose)
-    deploy(ip, src, path=path, build=build, key=key, include=include, exclude=exclude, verbose=verbose)
+    deploy(ip, src, path=path, build=build, key=key, include=include, exclude=exclude, extra=extra, verbose=verbose)
     return AttrDict(ip=ip, name=name, key=key)
 
 # %% ../nbs/00_core.ipynb #0929rkcanuri
