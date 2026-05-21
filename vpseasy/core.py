@@ -4,8 +4,8 @@
 
 # %% auto #0
 __all__ = ['mp', 'dock_cmd', 'Multipass', 'deploy_mp', 'keygen', 'gen_key', 'vps_init', 'multi_init', 'Hetzner', 'run_ssh',
-           'sync', 'chk_docker', 'deploy', 'wait_ssh', 'chk_cloud_init', 'wait_ready', 'hetzner_deploy',
-           'load_pub_keys', 'vols_to_binds', 'caddy_stack', 'mv_skill_md']
+           'sync', 'chk_docker', 'deploy', 'wait_ssh', 'chk_cloud_init', 'wait_ready', 'hetzner_deploy', 'pull_remote',
+           'push_remote', 'run_remote_backup', 'load_pub_keys', 'vols_to_binds', 'caddy_stack', 'mv_skill_md']
 
 # %% ../nbs/00_core.ipynb #8795cffa
 import json, subprocess, time
@@ -264,6 +264,35 @@ def hetzner_deploy(name, src, hz=None, image='ubuntu-24.04', server_type='cx23',
         wait_ready(ip, k=key, tout=tout, retries=retries, verbose=verbose)
     deploy(ip, src, path=path, build=build, key=key, include=include, exclude=exclude, extra=extra, verbose=verbose)
     return AttrDict(ip=ip, name=name, key=key)
+
+# %% ../nbs/00_core.ipynb #97c75d31
+def pull_remote(host, remote_path, local_dest, user='deploy', key=None, name=None,
+                include=None, exclude=None, extra=None, verbose=False):
+    'Pull remote_path from host to local_dest via rsync. Additive (no --delete).'
+    local_dest = Path(local_dest)
+    local_dest.mkdir(parents=True, exist_ok=True)
+    ssh_e = ' '.join(_ssh(host, user, _res_key(key, name), 22)[:-1])
+    inc, exc = listify(include), listify(exclude)
+    cmd = ['rsync', '-az' + ('m' if inc else ''), '-e', ssh_e, *listify(extra)]
+    for p in exc: cmd += ['--exclude', p]
+    if inc:
+        for p in inc: cmd += (['--include', p] if not p.endswith('/') else ['--include', p.rstrip('/'), '--include', p+'**'])
+        cmd += ['--include', '*/', '--exclude', '*']
+    cmd += [f'{user}@{host}:{remote_path.rstrip("/")}/', str(local_dest).rstrip('/') + '/']
+    if verbose: print('Running rsync (pull):', ' '.join(cmd))
+    run(cmd)
+    if verbose: print('Pull completed')
+
+def push_remote(host, local_src, remote_path, user='deploy', key=None, name=None,
+                include=None, exclude=None, extra=None, verbose=False):
+    'Push local_src to host:remote_path. Symmetric alias over sync().'
+    sync(host, local_src, remote_path, user=user, key=key, name=name,
+         include=include, exclude=exclude, extra=extra, verbose=verbose)
+
+def run_remote_backup(host, cmd='lego-backup', path='/srv/app', user='deploy', key=None, name=None, verbose=False):
+    'Run cmd inside app container via docker compose exec -T (CI/CD safe, no TTY).'
+    return run_ssh(host, f'cd {path} && docker compose exec -T app {cmd}',
+                   user=user, key=key, name=name, verbose=verbose)
 
 # %% ../nbs/00_core.ipynb #0929rkcanuri
 def load_pub_keys(paths=None) -> list:
