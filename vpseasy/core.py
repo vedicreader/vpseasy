@@ -8,7 +8,8 @@ __all__ = ['mp', 'dock_cmd', 'Multipass', 'deploy_mp', 'keygen', 'gen_key', 'vps
            'load_pub_keys', 'vols_to_binds', 'caddy_stack', 'mv_skill_md']
 
 # %% ../nbs/00_core.ipynb #8795cffa
-import json, subprocess, time
+import json, os, shlex, stat, subprocess, tempfile, time
+from contextlib import contextmanager
 from dockeasy import Cli, env_get, Compose, caddy_svc, cloudflared_svc, fasthtml_app
 from fastcore.all import L, Path, run, listify, AttrDict, AttrDictDefault, delegates
 from fastcloudinit.core import cloud_init_base, cloud_init_config, user, runcmd, reboot
@@ -153,18 +154,44 @@ def _res_key(key=None, name=None):
     print('Resolved SSH key from name slug:', p)
     return str(p)
 
+@contextmanager
+def _askpass_env(key_pass):
+    "Temporarily sets SSH_ASKPASS env vars so ssh/rsync can use a passphrase-protected key. No-op if key_pass is None."
+    if not key_pass:
+        yield
+        return
+    fd, path = tempfile.mkstemp(prefix='.vpseasy_askpass_', suffix='.sh')
+    saved = {}
+    try:
+        os.write(fd, f'#!/bin/sh\necho {shlex.quote(key_pass)}\n'.encode())
+        os.close(fd)
+        os.chmod(path, stat.S_IRWXU)
+        for k in ('SSH_ASKPASS', 'SSH_ASKPASS_REQUIRE', 'DISPLAY'):
+            saved[k] = os.environ.get(k)
+        os.environ['SSH_ASKPASS'] = path
+        os.environ['SSH_ASKPASS_REQUIRE'] = 'force'
+        os.environ.pop('DISPLAY', None)
+        yield
+    finally:
+        for k, v in saved.items():
+            if v is None: os.environ.pop(k, None)
+            else: os.environ[k] = v
+        try: os.unlink(path)
+        except FileNotFoundError: pass
+
 @delegates(run, keep=True)
-def run_ssh(host, *cmds, user='deploy', key=None, name=None, port=22, check=True, verbose=False, **kwargs):
+def run_ssh(host, *cmds, user='deploy', key=None, name=None, port=22, key_pass=None, check=True, verbose=False, **kwargs):
     'Run commands on remote host via SSH. Returns stdout string. check=False ignores non-zero exit codes.'
-    r = run(_ssh(host, user, _res_key(key, name), port) + [' && '.join(cmds)], ignore_ex=not check, **kwargs)
+    with _askpass_env(key_pass):
+        r = run(_ssh(host, user, _res_key(key, name), port) + [' && '.join(cmds)], ignore_ex=not check, **kwargs)
     if verbose: print(f'Ran SSH command on {host}: {" && ".join(cmds)} → {r}')
     return r
 
 
-def sync(host, src='.', path='/srv/app', user='deploy', key=None, name=None, include=None, exclude=None, extra=None, verbose=False):
+def sync(host, src='.', path='/srv/app', user='deploy', key=None, name=None, include=None, exclude=None, extra=None, key_pass=None, verbose=False):
     'Rsync local src to remote host:path. include= whitelist patterns, exclude= blacklist patterns. extra= extra rsync flags e.g. "--checksum" or ["--ignore-times","--partial"].'
     a = f'[ -d {path} -a -w {path} ] || (sudo mkdir -p {path} && sudo chown {user}:{user} {path})'
-    run_ssh(host, a, user=user, key=key, name=name)
+    run_ssh(host, a, user=user, key=key, name=name, key_pass=key_pass)
     if verbose: print(f'Ensured remote path {path} exists and is writable by {user}')
     ssh_e = ' '.join(_ssh(host, user, _res_key(key, name), 22)[:-1])
     inc, exc = listify(include), listify(exclude)
@@ -175,47 +202,48 @@ def sync(host, src='.', path='/srv/app', user='deploy', key=None, name=None, inc
         cmd += ['--include', '*/', '--exclude', '*']
     cmd += [str(src).rstrip('/') + '/', f'{user}@{host}:{path}/']
     if verbose: print('Running rsync:', ' '.join(cmd))
-    run(cmd)
+    with _askpass_env(key_pass):
+        run(cmd)
     if verbose: print('Rsync completed successfully')
 
-def chk_docker(host, u='deploy', k=None, name=None, verbose=False) -> bool:
-	'Verify docker daemon is running and user can run containers.'
-	try:
-		r = run_ssh(host, 'docker info', user=u, key=k, name=name)
-		if verbose: print(f'Docker info: {r.strip()}')
-		return True
-	except Exception as e:
-		if verbose: print(f'Docker check failed: {e}')
-		return False
+def chk_docker(host, u='deploy', k=None, name=None, key_pass=None, verbose=False) -> bool:
+    'Verify docker daemon is running and user can run containers.'
+    try:
+        r = run_ssh(host, 'docker info', user=u, key=k, name=name, key_pass=key_pass)
+        if verbose: print(f'Docker info: {r.strip()}')
+        return True
+    except Exception as e:
+        if verbose: print(f'Docker check failed: {e}')
+        return False
 
-def _chk_compose(host, path, f='docker-compose.yml',u='deploy', k=None, name=None, verbose=False) -> bool:
-	'Check if Dockerfile exists in the remote path.'
-	try:
-		r = run_ssh(host, f'ls {path}/{f}', user=u, key=k, name=name)
-		if verbose: print(f'docker-compose check output: {r.strip()}')
-		return 'docker-compose' in r
-	except Exception as e:
-		if verbose: print(f'docker-compose check failed: {e}')
-		return False
+def _chk_compose(host, path, f='docker-compose.yml', u='deploy', k=None, name=None, key_pass=None, verbose=False) -> bool:
+    'Check if Dockerfile exists in the remote path.'
+    try:
+        r = run_ssh(host, f'ls {path}/{f}', user=u, key=k, name=name, key_pass=key_pass)
+        if verbose: print(f'docker-compose check output: {r.strip()}')
+        return 'docker-compose' in r
+    except Exception as e:
+        if verbose: print(f'docker-compose check failed: {e}')
+        return False
 
 def deploy(host, src='.', path='/srv/app', user='deploy', build=True, key=None, name=None,
-           include=None, exclude=None, extra=None, verbose=False):
+           include=None, exclude=None, extra=None, key_pass=None, verbose=False):
     'Sync src to host via rsync then docker compose up if docker is available. extra= extra rsync flags forwarded to sync().'
-    sync(host, src, path, user, key=key, name=name, include=include, exclude=exclude, extra=extra, verbose=verbose)
-    kw = dict(host=host, u=user, k=key, name=name, verbose=verbose)
+    sync(host, src, path, user, key=key, name=name, include=include, exclude=exclude, extra=extra, key_pass=key_pass, verbose=verbose)
+    kw = dict(host=host, u=user, k=key, name=name, key_pass=key_pass, verbose=verbose)
     if not (chk_docker(**kw) and _chk_compose(path=path,**kw)): return
     a = f'cd {path} && docker compose up -d --remove-orphans' + (' --build' if build else '')
-    r = run_ssh(host, a, user=user, key=key, name=name, verbose=verbose)
+    r = run_ssh(host, a, user=user, key=key, name=name, key_pass=key_pass, verbose=verbose)
     if verbose: print('docker compose ran' + (' with build' if build else ''), '→', r.strip())
 
 
 # %% ../nbs/00_core.ipynb #q4e3dvg4au
-def wait_ssh(host, u='deploy', k=None, name=None, p=22, tout=300, interval=5, verbose=True):
+def wait_ssh(host, u='deploy', k=None, name=None, p=22, tout=300, interval=5, key_pass=None, verbose=True):
     'Poll SSH until connection succeeds or raises TimeoutError.'
     dl = time.time() + tout
     while time.time() < dl:
         try:
-            run_ssh(host, 'true', user=u, key=k, name=name, port=p)
+            run_ssh(host, 'true', user=u, key=k, name=name, port=p, key_pass=key_pass)
             if verbose: print(f'SSH to host {host} check succeeded')
             return True
         except Exception as e:
@@ -223,21 +251,21 @@ def wait_ssh(host, u='deploy', k=None, name=None, p=22, tout=300, interval=5, ve
             time.sleep(interval)
     raise TimeoutError(f'SSH to {host} not ready after {tout}s')
 
-def chk_cloud_init(host, u='deploy', k=None, name=None, verbose=True) -> str:
+def chk_cloud_init(host, u='deploy', k=None, name=None, key_pass=None, verbose=True) -> str:
     'Return cloud-init status: done|running|error|unknown. check=False handles exit code 2 (done-with-warnings) on Ubuntu 24.04.'
-    o = run_ssh(host, 'sudo cloud-init status', user=u, key=k, name=name, check=False, verbose=verbose)
+    o = run_ssh(host, 'sudo cloud-init status', user=u, key=k, name=name, key_pass=key_pass, check=False, verbose=verbose)
     o = o[1].strip()
     return o.split(': ', 1)[-1].strip() if ': ' in o else (o or 'unknown')
 
 
 # %% ../nbs/00_core.ipynb #0d506066
-def wait_ready(host, u='deploy', k=None, name=None, tout=300, interval=5, retries=2, verbose=False):
+def wait_ready(host, u='deploy', k=None, name=None, tout=300, interval=5, retries=2, key_pass=None, verbose=False):
     'Wait for SSH then poll cloud-init until done. Retries cloud-init polling up to `retries` times before raising TimeoutError.'
-    wait_ssh(host, u=u, k=k, name=name, tout=tout, interval=interval, verbose=verbose)
+    wait_ssh(host, u=u, k=k, name=name, tout=tout, interval=interval, key_pass=key_pass, verbose=verbose)
     for a in range(retries + 1):
         dl = time.time() + tout
         while time.time() < dl:
-            status = chk_cloud_init(host, u=u, k=k, name=name)
+            status = chk_cloud_init(host, u=u, k=k, name=name, key_pass=key_pass)
             if verbose: print(f'cloud-init status: {status}')
             if status == 'done': return True
             if status == 'error': raise RuntimeError(f'cloud-init failed on {host}')
@@ -247,22 +275,22 @@ def wait_ready(host, u='deploy', k=None, name=None, tout=300, interval=5, retrie
 
 # %% ../nbs/00_core.ipynb #2bf3f571
 def hetzner_deploy(name, src, hz=None, image='ubuntu-24.04', server_type='cx23', location=None,
-                   path='/srv/app', build=True, include=None, exclude=None, extra=None, tout=600, retries=2, verbose=True):
+                   path='/srv/app', build=True, include=None, exclude=None, extra=None, key_pass=None, tout=600, retries=2, verbose=True):
     'Full pipeline: provision Hetzner VPS (idempotent) → wait for cloud-init → deploy. Returns AttrDict(ip, name, key).'
     hz = hz or Hetzner()
     ex = hz._c.servers.get_by_name(name)
     if ex:
         ip, key = ex.public_net.ipv4.ip, _res_key(name=name)
         if verbose: print(f'Server {name} already exists at {ip}, checking cloud-init ...')
-        wait_ready(ip, k=key, tout=tout, retries=retries, verbose=verbose)
+        wait_ready(ip, k=key, tout=tout, retries=retries, key_pass=key_pass, verbose=verbose)
     else:
         ci = vps_init(name)
         svr = hz.create(name, image=image, server_type=server_type, location=location, cloud_init=ci)
         ip, key = svr.ip, svr.key
         subprocess.run(['ssh-keygen', '-R', ip], capture_output=True)
         if verbose: print(f'Server {name} provisioning at {ip} ...')
-        wait_ready(ip, k=key, tout=tout, retries=retries, verbose=verbose)
-    deploy(ip, src, path=path, build=build, key=key, include=include, exclude=exclude, extra=extra, verbose=verbose)
+        wait_ready(ip, k=key, tout=tout, retries=retries, key_pass=key_pass, verbose=verbose)
+    deploy(ip, src, path=path, build=build, key=key, include=include, exclude=exclude, extra=extra, key_pass=key_pass, verbose=verbose)
     return AttrDict(ip=ip, name=name, key=key)
 
 # %% ../nbs/00_core.ipynb #0929rkcanuri
