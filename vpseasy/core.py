@@ -195,7 +195,7 @@ def sync(host, src='.', path='/srv/app', user='deploy', key=None, name=None, inc
     inner = f'mkdir -p {path} && chown {user}:{user} {path}'
     if password:
         a = f'[ -d {path} -a -w {path} ] || sudo -S sh -c {shlex.quote(inner)}'
-        run_ssh(host, a, user=user, key=key, name=name, key_pass=key_pass, stdin_data=(password + chr(10)).encode())
+        run_ssh(host, a, user=user, key=key, name=name, key_pass=key_pass, password=password, stdin_data=(password + chr(10)).encode())
     else:
         a = f'[ -d {path} -a -w {path} ] || sudo sh -c {shlex.quote(inner)}'
         run_ssh(host, a, user=user, key=key, name=name, key_pass=key_pass)

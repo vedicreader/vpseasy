@@ -2,6 +2,11 @@
 
 <!-- do not remove -->
 
+## 0.0.13
+bug fix on deploy
+
+
+
 ## 0.0.12
 use subprocess run everywhere
 
