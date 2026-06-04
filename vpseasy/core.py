@@ -105,7 +105,7 @@ class Hetzner:
         if not s: raise ValueError(f'Server {name!r} not found')
         return s.public_net.ipv4.ip
 
-    def create(self, name, image='ubuntu-24.04', server_type='cx23', location=None, cloud_init=None, ssh_keys=None):
+    def create(self, name, image='ubuntu-24.04', server_type='cx23', location=None, cloud_init=None, ssh_keys=None, key=None):
         '''Create a server. cloud_init: YAML string or AttrDict(yaml, key) from vps_init(). Returns AttrDict(ip, name, key, resp).
         NOTE: ssh_keys are Hetzner-registered keys injected into the root user only — they do NOT grant access to the
         deploy user created by cloud_init. Pass ssh_keys only when cloud_init is None (root-only access).'''
@@ -115,16 +115,10 @@ class Hetzner:
                 'while cloud_init creates a deploy user with its own key. '
                 'Use cloud_init alone (key is in the returned AttrDict) or ssh_keys alone for root access.'
             )
-        key = None
         if isinstance(cloud_init, AttrDict): key, cloud_init = cloud_init.key, cloud_init.yaml
-        resp = self._c.servers.create(
-            name=name,
-            server_type=ServerType(name=server_type),
-            image=Image(name=image),
-            location=Location(name=location) if location else None,
-            user_data=cloud_init,
-            ssh_keys=[SSHKey(name=k) for k in (ssh_keys or [])],
-        )
+        resp = self._c.servers.create(name=name,server_type=ServerType(name=server_type),
+            image=Image(name=image), location=Location(name=location) if location else None,
+            user_data=cloud_init, ssh_keys=[SSHKey(name=k) for k in (ssh_keys or [])])
         return AttrDict(ip=resp.server.public_net.ipv4.ip, name=name, key=key, resp=resp)
 
     def delete(self, name) -> None:
@@ -173,13 +167,12 @@ def _askpass_env(pw):
     finally:
         with suppress(FileNotFoundError): os.unlink(path)
 
-def run_ssh(host, *cmds, user='deploy', key=None, name=None, port=22, key_pass=None, password=None, check=True, verbose=False, stdin_data=None):
+def run_ssh(host, *cmds, user='deploy', key=None, name=None, port=22, key_pass=None, password=None, check=True,
+            verbose=False, stdin_data=None):
     'Run commands on remote host via SSH. key_pass= for key passphrase, password= for server password auth. Pass True to either to prompt. stdin_data= bytes piped to remote stdin (e.g. for sudo -S).'
-    key_pass = _resolve_pass(key_pass, 'SSH key passphrase: ')
-    password = _resolve_pass(password, 'SSH password: ')
+    key_pass, password = _resolve_pass(key_pass, 'SSH key passphrase: '), _resolve_pass(password, 'SSH password: ')
     ssh_cmd = _ssh(host, user, _res_key(key, name), port) + [' && '.join(cmds)]
-    with _askpass_env(key_pass or password):
-        res = subprocess.run(ssh_cmd, input=stdin_data, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    with _askpass_env(key_pass or password): res = subprocess.run(ssh_cmd, input=stdin_data, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     out = res.stdout.decode().strip()
     if res.stderr: out += ' ;; ' + res.stderr.decode().strip()
     if verbose: print(f'Ran SSH command on {host}: {" && ".join(cmds)} → {(res.returncode, out)}')
@@ -189,16 +182,15 @@ def run_ssh(host, *cmds, user='deploy', key=None, name=None, port=22, key_pass=N
 
 def sync(host, src='.', path='/srv/app', user='deploy', key=None, name=None, include=None, exclude=None,
          extra=None, key_pass=None, password=None, verbose=False):
-    'Rsync local src to remote host:path. include= whitelist patterns, exclude= blacklist patterns. extra= extra rsync flags e.g. "--checksum" or ["--ignore-times","--partial"].'
+    '''Rsync local src to remote host:path. include= whitelist patterns, exclude= blacklist patterns.
+     extra= extra rsync flags e.g. "--checksum" or ["--ignore-times","--partial"].'''
     key_pass = _resolve_pass(key_pass, 'SSH key passphrase: ')
     password = _resolve_pass(password, 'SSH password: ')
     inner = f'mkdir -p {path} && chown {user}:{user} {path}'
-    if password:
-        a = f'[ -d {path} -a -w {path} ] || sudo -S sh -c {shlex.quote(inner)}'
-        run_ssh(host, a, user=user, key=key, name=name, key_pass=key_pass, password=password, stdin_data=(password + chr(10)).encode())
-    else:
-        a = f'[ -d {path} -a -w {path} ] || sudo sh -c {shlex.quote(inner)}'
-        run_ssh(host, a, user=user, key=key, name=name, key_pass=key_pass)
+    a = f'[ -d {path} -a -w {path} ] || sudo {'-S' if password else ''} sh -c {shlex.quote(inner)}'
+    stdin_data = (password + chr(10)).encode() if password else None
+    kw = dict(user=user, key=key, name=name, key_pass=key_pass, stdin_data=stdin_data, verbose=verbose)
+    run_ssh(host, a, **kw)
     if verbose: print(f'Ensured remote path {path} exists and is writable by {user}')
     ssh_e = ' '.join(_ssh(host, user, _res_key(key, name), 22)[:-1])
     inc, exc = listify(include), listify(exclude)
@@ -235,8 +227,6 @@ def _chk_compose(host, path, f='docker-compose.yml', u='deploy', k=None, name=No
 def deploy(host, src='.', path='/srv/app', user='deploy', build=True, key=None, name=None,
            include=None, exclude=None, extra=None, key_pass=None, password=None, verbose=False):
     'Sync src to host via rsync then docker compose up if docker is available. extra= extra rsync flags forwarded to sync().'
-    key_pass = _resolve_pass(key_pass, 'SSH key passphrase: ')
-    password = _resolve_pass(password, 'SSH password: ')
     sync(host, src, path, user, key=key, name=name, include=include, exclude=exclude, extra=extra, key_pass=key_pass, password=password, verbose=verbose)
     kw = dict(host=host, u=user, k=key, name=name, key_pass=key_pass, password=password, verbose=verbose)
     if not (chk_docker(**kw) and _chk_compose(path=path,**kw)): return
@@ -247,8 +237,6 @@ def deploy(host, src='.', path='/srv/app', user='deploy', build=True, key=None, 
 # %% ../nbs/00_core.ipynb #q4e3dvg4au
 def wait_ssh(host, u='deploy', k=None, name=None, p=22, tout=300, interval=5, key_pass=None, password=None, verbose=True):
     'Poll SSH until connection succeeds or raises TimeoutError.'
-    key_pass = _resolve_pass(key_pass, 'SSH key passphrase: ')
-    password = _resolve_pass(password, 'SSH password: ')
     dl = time.time() + tout
     while time.time() < dl:
         try:
@@ -280,11 +268,9 @@ def wait_ready(host,
                password=None,
                verbose=False
 ):
-    'Wait for SSH then poll cloud-init until done. Retries cloud-init polling up to `retries` times before raising TimeoutError.'
-    key_pass = _resolve_pass(key_pass, 'SSH key passphrase: ')
-    password = _resolve_pass(password, 'SSH password: ')
-    wait_ssh(host, u=u, k=k, name=name, tout=tout, interval=interval, key_pass=key_pass,
-             password=password, verbose=verbose)
+    '''Wait for SSH then poll cloud-init until done. Retries cloud-init polling up to `retries`
+    times before raising TimeoutError.'''
+    wait_ssh(host,u=u,k=k,name=name,tout=tout,interval=interval,key_pass=key_pass,password=password,verbose=verbose)
     for a in range(retries + 1):
         dl = time.time() + tout
         while time.time() < dl:
@@ -317,8 +303,6 @@ def hetzner_deploy(name, # server name (also used for SSH key slug if key not gi
                    verbose=True # whether to print verbose logs during wait and deploy steps
 ):
     'Full pipeline: provision Hetzner VPS (idempotent) → wait for cloud-init → deploy. Returns AttrDict(ip, name, key).'
-    key_pass = _resolve_pass(key_pass, 'SSH key passphrase: ')
-    password = _resolve_pass(password, 'SSH password: ')
     hz = hz or Hetzner()
     ex = hz._c.servers.get_by_name(name)
     if ex:
