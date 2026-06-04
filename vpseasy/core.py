@@ -173,15 +173,18 @@ def _askpass_env(pw):
     finally:
         with suppress(FileNotFoundError): os.unlink(path)
 
-@delegates(run, keep=True)
-def run_ssh(host, *cmds, user='deploy', key=None, name=None, port=22, key_pass=None, password=None, check=True, verbose=False, **kwargs):
-    'Run commands on remote host via SSH. key_pass= for key passphrase, password= for server password auth. Pass True to either to prompt.'
+def run_ssh(host, *cmds, user='deploy', key=None, name=None, port=22, key_pass=None, password=None, check=True, verbose=False, stdin_data=None):
+    'Run commands on remote host via SSH. key_pass= for key passphrase, password= for server password auth. Pass True to either to prompt. stdin_data= bytes piped to remote stdin (e.g. for sudo -S).'
     key_pass = _resolve_pass(key_pass, 'SSH key passphrase: ')
     password = _resolve_pass(password, 'SSH password: ')
+    ssh_cmd = _ssh(host, user, _res_key(key, name), port) + [' && '.join(cmds)]
     with _askpass_env(key_pass or password):
-        r = run(_ssh(host, user, _res_key(key, name), port) + [' && '.join(cmds)], ignore_ex=not check, **kwargs)
-    if verbose: print(f'Ran SSH command on {host}: {" && ".join(cmds)} → {r}')
-    return r
+        res = subprocess.run(ssh_cmd, input=stdin_data, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    out = res.stdout.decode().strip()
+    if res.stderr: out += ' ;; ' + res.stderr.decode().strip()
+    if verbose: print(f'Ran SSH command on {host}: {" && ".join(cmds)} → {(res.returncode, out)}')
+    if check and res.returncode: raise IOError(out)
+    return (res.returncode, out) if not check else out
 
 
 def sync(host, src='.', path='/srv/app', user='deploy', key=None, name=None, include=None, exclude=None,
@@ -189,8 +192,13 @@ def sync(host, src='.', path='/srv/app', user='deploy', key=None, name=None, inc
     'Rsync local src to remote host:path. include= whitelist patterns, exclude= blacklist patterns. extra= extra rsync flags e.g. "--checksum" or ["--ignore-times","--partial"].'
     key_pass = _resolve_pass(key_pass, 'SSH key passphrase: ')
     password = _resolve_pass(password, 'SSH password: ')
-    a = f'[ -d {path} -a -w {path} ] || (sudo mkdir -p {path} && sudo chown {user}:{user} {path})'
-    run_ssh(host, a, user=user, key=key, name=name, key_pass=key_pass, password=password)
+    inner = f'mkdir -p {path} && chown {user}:{user} {path}'
+    if password:
+        a = f'[ -d {path} -a -w {path} ] || sudo -S sh -c {shlex.quote(inner)}'
+        run_ssh(host, a, user=user, key=key, name=name, key_pass=key_pass, stdin_data=(password + chr(10)).encode())
+    else:
+        a = f'[ -d {path} -a -w {path} ] || sudo sh -c {shlex.quote(inner)}'
+        run_ssh(host, a, user=user, key=key, name=name, key_pass=key_pass)
     if verbose: print(f'Ensured remote path {path} exists and is writable by {user}')
     ssh_e = ' '.join(_ssh(host, user, _res_key(key, name), 22)[:-1])
     inc, exc = listify(include), listify(exclude)
@@ -201,8 +209,7 @@ def sync(host, src='.', path='/srv/app', user='deploy', key=None, name=None, inc
         cmd += ['--include', '*/', '--exclude', '*']
     cmd += [str(src).rstrip('/') + '/', f'{user}@{host}:{path}/']
     if verbose: print('Running rsync:', ' '.join(cmd))
-    with _askpass_env(key_pass or password):
-        run(cmd)
+    with _askpass_env(key_pass or password): subprocess.run(cmd)
     if verbose: print('Rsync completed successfully')
 
 def chk_docker(host, u='deploy', k=None, name=None, key_pass=None, password=None, verbose=False) -> bool:
@@ -236,7 +243,6 @@ def deploy(host, src='.', path='/srv/app', user='deploy', build=True, key=None, 
     a = f'cd {path} && docker compose up -d --remove-orphans' + (' --build' if build else '')
     r = run_ssh(host, a, user=user, key=key, name=name, key_pass=key_pass, password=password, verbose=verbose)
     if verbose: print('docker compose ran' + (' with build' if build else ''), '→', r.strip())
-
 
 # %% ../nbs/00_core.ipynb #q4e3dvg4au
 def wait_ssh(host, u='deploy', k=None, name=None, p=22, tout=300, interval=5, key_pass=None, password=None, verbose=True):
