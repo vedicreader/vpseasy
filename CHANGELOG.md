@@ -2,6 +2,11 @@
 
 <!-- do not remove -->
 
+## 0.0.8
+servers with password
+
+
+
 ## 0.0.7
 sync takes extraextra
 
