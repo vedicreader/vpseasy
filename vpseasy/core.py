@@ -294,6 +294,7 @@ def wait_ready(host,
 def hetzner_deploy(name, # server name (also used for SSH key slug if key not given)
                    src,  # local path to sync and deploy
                    hz=None, # optional Hetzner() instance — creates one if not given
+                   user='deploy', # remote username to deploy with (must match cloud-init user)
                    key=None, # optional SSH private key path or Path object (overrides name-based lookup of ~/.ssh/<name>)
                    image='ubuntu-24.04', # Hetzner image slug
                    server_type='cx23', # Hetzner server type slug
@@ -317,15 +318,15 @@ def hetzner_deploy(name, # server name (also used for SSH key slug if key not gi
     if ex:
         ip, key = ex.public_net.ipv4.ip, _res_key(key=key, name=name)
         if verbose: print(f'Server {name} already exists at {ip}, checking cloud-init ...')
-        wait_ready(ip, k=key, tout=tout, retries=retries, key_pass=key_pass, password=password, verbose=verbose)
+        wait_ready(ip, u=user, k=key, tout=tout, retries=retries, key_pass=key_pass, password=password, verbose=verbose)
     else:
         ci = vps_init(name)
         svr = hz.create(name, image=image, server_type=server_type, location=location, cloud_init=ci)
         ip, key = svr.ip, svr.key
         subprocess.run(['ssh-keygen', '-R', ip], capture_output=True)
         if verbose: print(f'Server {name} provisioning at {ip} ...')
-        wait_ready(ip, k=key, tout=tout, retries=retries, key_pass=key_pass, password=password, verbose=verbose)
-    deploy(ip, src, path=path, build=build, key=key, include=include, exclude=exclude,
+        wait_ready(ip, u=user, k=key, tout=tout, retries=retries, key_pass=key_pass, password=password, verbose=verbose)
+    deploy(ip, src, user=user, path=path, build=build, key=key, include=include, exclude=exclude,
            extra=extra, key_pass=key_pass, password=password, verbose=verbose)
     return AttrDict(ip=ip, name=name, key=key)
 
