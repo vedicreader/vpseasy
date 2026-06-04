@@ -256,8 +256,8 @@ def wait_ssh(host, u='deploy', k=None, name=None, p=22, tout=300, interval=5, ke
 
 def chk_cloud_init(host, u='deploy', k=None, name=None, key_pass=None, password=None, verbose=True) -> str:
     'Return cloud-init status: done|running|error|unknown. check=False handles exit code 2 (done-with-warnings) on Ubuntu 24.04.'
-    o = run_ssh(host, 'sudo cloud-init status', user=u, key=k, name=name,
-        key_pass=key_pass, password=password, check=False, verbose=verbose)
+    c = "test -f /var/lib/cloud/instance/boot-finished && echo 'status: done' || echo 'status: running'"
+    o = run_ssh(host, c, user=u, key=k, name=name, key_pass=key_pass, password=password, check=False, verbose=verbose)
     o = o[1].strip()
     return o.split(': ', 1)[-1].strip() if ': ' in o else (o or 'unknown')
 
