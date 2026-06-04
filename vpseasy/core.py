@@ -294,6 +294,7 @@ def wait_ready(host,
 def hetzner_deploy(name, # server name (also used for SSH key slug if key not given)
                    src,  # local path to sync and deploy
                    hz=None, # optional Hetzner() instance — creates one if not given
+                   key=None, # optional SSH private key path or Path object (overrides name-based lookup of ~/.ssh/<name>)
                    image='ubuntu-24.04', # Hetzner image slug
                    server_type='cx23', # Hetzner server type slug
                    location=None, # Hetzner location slug e.g. 'hel1' (optional)
@@ -314,7 +315,7 @@ def hetzner_deploy(name, # server name (also used for SSH key slug if key not gi
     hz = hz or Hetzner()
     ex = hz._c.servers.get_by_name(name)
     if ex:
-        ip, key = ex.public_net.ipv4.ip, _res_key(name=name)
+        ip, key = ex.public_net.ipv4.ip, _res_key(key=key, name=name)
         if verbose: print(f'Server {name} already exists at {ip}, checking cloud-init ...')
         wait_ready(ip, k=key, tout=tout, retries=retries, key_pass=key_pass, password=password, verbose=verbose)
     else:
