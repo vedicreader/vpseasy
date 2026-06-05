@@ -154,6 +154,9 @@ def _resolve_pass(v, prompt):
     "Return v, or prompt via getpass if v is True."
     return getpass.getpass(prompt) if v is True else v
 
+def _resolve_cred(key_pass=None, password=None):
+	return _resolve_pass(key_pass, 'SSH key passphrase: '), _resolve_pass(password, 'SSH password: ')
+
 @contextmanager
 def _askpass_env(pw):
     "Sets SSH_ASKPASS env for key passphrase or server password auth. No-op if pw is None."
@@ -170,7 +173,7 @@ def _askpass_env(pw):
 def run_ssh(host, *cmds, user='deploy', key=None, name=None, port=22, key_pass=None, password=None, check=True,
             verbose=False, stdin_data=None):
     'Run commands on remote host via SSH. key_pass= for key passphrase, password= for server password auth. Pass True to either to prompt. stdin_data= bytes piped to remote stdin (e.g. for sudo -S).'
-    key_pass, password = _resolve_pass(key_pass, 'SSH key passphrase: '), _resolve_pass(password, 'SSH password: ')
+    key_pass, password = _resolve_cred(key_pass, password)
     ssh_cmd = _ssh(host, user, _res_key(key, name), port) + [' && '.join(cmds)]
     with _askpass_env(key_pass or password): res = subprocess.run(ssh_cmd, input=stdin_data, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     out = res.stdout.decode().strip()
@@ -184,8 +187,7 @@ def sync(host, src='.', path='/srv/app', user='deploy', key=None, name=None, inc
          extra=None, key_pass=None, password=None, verbose=False):
     '''Rsync local src to remote host:path. include= whitelist patterns, exclude= blacklist patterns.
      extra= extra rsync flags e.g. "--checksum" or ["--ignore-times","--partial"].'''
-    key_pass = _resolve_pass(key_pass, 'SSH key passphrase: ')
-    password = _resolve_pass(password, 'SSH password: ')
+    key_pass, password = _resolve_cred(key_pass, password)
     inner = f'mkdir -p {path} && chown {user}:{user} {path}'
     a = f'[ -d {path} -a -w {path} ] || sudo {'-S' if password else ''} sh -c {shlex.quote(inner)}'
     stdin_data = (password + chr(10)).encode() if password else None
@@ -208,6 +210,7 @@ def sync(host, src='.', path='/srv/app', user='deploy', key=None, name=None, inc
 def chk_docker(host, u='deploy', k=None, name=None, key_pass=None, password=None, verbose=False) -> bool:
 	'Verify docker daemon is running and user can run containers.'
 	try:
+		key_pass, password = _resolve_cred(key_pass, password)
 		r = run_ssh(host, 'docker info', user=u, key=k, name=name, key_pass=key_pass, password=password)
 		if verbose: print(f'Docker info: {r.strip()}')
 		return True
@@ -218,6 +221,7 @@ def chk_docker(host, u='deploy', k=None, name=None, key_pass=None, password=None
 def _chk_compose(host, path, f='docker-compose.yml', u='deploy', k=None, name=None, key_pass=None, password=None, verbose=False) -> bool:
 	'Check if Dockerfile exists in the remote path.'
 	try:
+		key_pass, password = _resolve_cred(key_pass, password)
 		r = run_ssh(host, f'ls {path}/{f}', user=u, key=k, name=name, key_pass=key_pass, password=password)
 		if verbose: print(f'docker-compose check output: {r.strip()}')
 		return 'docker-compose' in r
@@ -228,7 +232,9 @@ def _chk_compose(host, path, f='docker-compose.yml', u='deploy', k=None, name=No
 def deploy(host, src='.', path='/srv/app', user='deploy', build=True, key=None, name=None,
            include=None, exclude=None, extra=None, key_pass=None, password=None, verbose=False):
     'Sync src to host via rsync then docker compose up if docker is available. extra= extra rsync flags forwarded to sync().'
-    sync(host, src, path, user, key=key, name=name, include=include, exclude=exclude, extra=extra, key_pass=key_pass, password=password, verbose=verbose)
+    key_pass, password = _resolve_cred(key_pass, password)
+    sync(host, src, path, user, key=key, name=name, include=include, exclude=exclude,
+         extra=extra, key_pass=key_pass, password=password, verbose=verbose)
     kw = dict(host=host, u=user, k=key, name=name, key_pass=key_pass, password=password, verbose=verbose)
     if not (chk_docker(**kw) and _chk_compose(path=path,**kw)): return
     a = f'cd {path} && docker compose up -d --remove-orphans' + (' --build' if build else '')
@@ -239,6 +245,7 @@ def deploy(host, src='.', path='/srv/app', user='deploy', build=True, key=None, 
 def wait_ssh(host, u='deploy', k=None, name=None, p=22, tout=300, interval=5, key_pass=None, password=None, verbose=True):
     'Poll SSH until connection succeeds or raises TimeoutError.'
     dl = time.time() + tout
+    key_pass, password = _resolve_cred(key_pass, password)
     while time.time() < dl:
         try:
             run_ssh(host, 'true', user=u, key=k, name=name, port=p, key_pass=key_pass, password=password)
@@ -252,6 +259,7 @@ def wait_ssh(host, u='deploy', k=None, name=None, p=22, tout=300, interval=5, ke
 def chk_cloud_init(host, u='deploy', k=None, name=None, key_pass=None, password=None, verbose=True) -> str:
     'Return cloud-init status: done|running|error|unknown. check=False handles exit code 2 (done-with-warnings) on Ubuntu 24.04.'
     c = "test -f /var/lib/cloud/instance/boot-finished && echo 'status: done' || echo 'status: running'"
+    key_pass, password = _resolve_cred(key_pass, password)
     o = run_ssh(host, c, user=u, key=k, name=name, key_pass=key_pass, password=password, check=False, verbose=verbose)
     o = o[1].strip()
     return o.split(': ', 1)[-1].strip() if ': ' in o else (o or 'unknown')
@@ -271,6 +279,7 @@ def wait_ready(host,
 ):
     '''Wait for SSH then poll cloud-init until done. Retries cloud-init polling up to `retries`
     times before raising TimeoutError.'''
+    key_pass, password = _resolve_cred(key_pass, password)
     wait_ssh(host,u=u,k=k,name=name,tout=tout,interval=interval,key_pass=key_pass,password=password,verbose=verbose)
     for a in range(retries + 1):
         dl = time.time() + tout
@@ -306,6 +315,7 @@ def hetzner_deploy(name, # server name (also used for SSH key slug if key not gi
     'Full pipeline: provision Hetzner VPS (idempotent) → wait for cloud-init → deploy. Returns AttrDict(ip, name, key).'
     hz = hz or Hetzner()
     ex = hz._c.servers.get_by_name(name)
+    key_pass, password = _resolve_cred(key_pass, password)
     if ex:
         ip, key = ex.public_net.ipv4.ip, _res_key(key=key, name=name)
         if verbose: print(f'Server {name} already exists at {ip}, checking cloud-init ...')
