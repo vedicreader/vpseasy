@@ -2,6 +2,11 @@
 
 <!-- do not remove -->
 
+## 0.0.15
+password bug fix
+
+
+
 ## 0.0.14
 refactor
 

@@ -189,7 +189,8 @@ def sync(host, src='.', path='/srv/app', user='deploy', key=None, name=None, inc
     inner = f'mkdir -p {path} && chown {user}:{user} {path}'
     a = f'[ -d {path} -a -w {path} ] || sudo {'-S' if password else ''} sh -c {shlex.quote(inner)}'
     stdin_data = (password + chr(10)).encode() if password else None
-    kw = dict(user=user, key=key, name=name, key_pass=key_pass, stdin_data=stdin_data, verbose=verbose)
+    kw = dict(user=user, key=key, name=name, key_pass=key_pass, stdin_data=stdin_data,
+              verbose=verbose, password=password)
     run_ssh(host, a, **kw)
     if verbose: print(f'Ensured remote path {path} exists and is writable by {user}')
     ssh_e = ' '.join(_ssh(host, user, _res_key(key, name), 22)[:-1])
