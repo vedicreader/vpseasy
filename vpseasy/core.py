@@ -197,7 +197,7 @@ def sync(host, src='.', path='/srv/app', user='deploy', key=None, name=None, inc
     if verbose: print(f'Ensured remote path {path} exists and is writable by {user}')
     ssh_e = ' '.join(_ssh(host, user, _res_key(key, name), 22)[:-1])
     inc, exc = listify(include), listify(exclude)
-    cmd = ['rsync', '-az' + ('m' if inc else ''), '--delete', '-e', ssh_e, *listify(extra)]
+    cmd = ['rsync', '-azh' + ('m' if inc else ''), '--info=progress2','--delete', '-e', ssh_e, *listify(extra)]
     for p in exc: cmd += ['--exclude', p]
     if inc:
         for p in inc: cmd+=(['--include',p] if not p.endswith('/') else ['--include',p.rstrip('/'),'--include',p+'**'])

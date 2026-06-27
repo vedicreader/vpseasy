@@ -2,6 +2,11 @@
 
 <!-- do not remove -->
 
+## 0.0.18
+rsync progress bar
+
+
+
 ## 0.0.17
 less pwd prompts
 
