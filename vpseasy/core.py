@@ -7,10 +7,11 @@ Docs: https://vedicreader.github.io/vpseasycore.html.md"""
 # %% auto #0
 __all__ = ['mp', 'dock_cmd', 'Multipass', 'deploy_mp', 'keygen', 'gen_key', 'vps_init', 'multi_init', 'Hetzner', 'Lightsail',
            'run_ssh', 'sync', 'chk_docker', 'deploy', 'wait_ssh', 'chk_cloud_init', 'wait_ready', 'vps_deploy',
-           'hetzner_deploy', 'load_pub_keys', 'vols_to_binds', 'caddy_stack', 'mv_skill_md']
+           'hetzner_deploy', 'load_pub_keys', 'vols_to_binds', 'caddy_stack', 'litestream_conf', 'litestream_svc',
+           'mv_skill_md']
 
 # %% ../nbs/00_core.ipynb #8795cffa
-import getpass, json, os, shlex, subprocess, tempfile, time
+import getpass, json, os, shlex, subprocess, tempfile, time, yaml
 from contextlib import contextmanager, suppress
 from dockeasy import Cli, env_get, Compose, caddy_svc, cloudflared_svc, fasthtml_app
 from fastcore.all import L, Path, run, listify, AttrDict, AttrDictDefault, delegates, modified_env
@@ -416,19 +417,52 @@ def vols_to_binds(vols):
     'Convert ["/app/data"] → ["./data:/app/data"] for docker compose bind mounts'
     return [f'./{v.split("/")[-1]}:{v}' for v in listify(vols)]
 
-def caddy_stack(domain, df, vols=None, env_file='.env', cloudflared=True, root=None, conf=None, **kw):
-    '''Compose with app + caddy + optional cloudflared, web network, caddy volumes.
-    df: Dockerfile instance. root: if given, saves Dockerfile + docker-compose.yml there. **kw passed to caddy_svc.'''
+def caddy_stack(domain, df, vols=None, env_file='.env', cloudflared=True, root=None, conf=None, litestream=None, **kw):
+    '''Compose with app + caddy + optional cloudflared and litestream, web network, caddy volumes.
+    df: Dockerfile instance. root: if given, saves Dockerfile + docker-compose.yml there.
+    litestream: dict(dbs, bucket, endpoint, region, prefix) streams the app's sqlite dbs to a bucket. **kw passed to caddy_svc.'''
     root = Path(root if root else '.')
     df.save(Path(root)/'Dockerfile')
     v,env = vols_to_binds(vols) if vols else None, listify(env_file) if env_file else None
     c = (Compose()
-         .svc('app', build=df, volumes=v, env_file=env, restart='unless-stopped', networks=['web'])
+         .svc('app', build=df, volumes=v, env_file=env, restart='unless-stopped', networks=['web'],
+              depends_on=['litestream'] if litestream else None)
          .svc('caddy', **caddy_svc(domain, cloudflared=cloudflared, conf=conf or root/'Caddyfile', **kw)))
     if cloudflared: c = c.svc('cloudflared', **cloudflared_svc(url='http://caddy'))
+    if litestream:
+        litestream_conf(conf=root/'litestream.yml', vols=listify(vols), **litestream)
+        lv = [o for o in listify(vols) if any(_under(p, o) for p in listify(litestream['dbs']))]
+        c = c.svc('litestream', **litestream_svc(vols=lv, env_file=env_file))
     c = c.network('web').volume('caddy_data').volume('caddy_config')
     if root: c.save(root/'docker-compose.yml')
     return c
+
+# %% ../nbs/00_core.ipynb #liteimpl
+def _under(p, vols):
+    'True if container path p is inside one of vols'
+    return any(Path(p) != Path(v) and Path(p).is_relative_to(v) for v in listify(vols))
+
+def litestream_conf(dbs, bucket, endpoint=None, region='auto', prefix=None, conf='litestream.yml', retention='72h',
+                    snapshot='24h', vols=None):
+    'Write a Litestream 0.5 config replicating each sqlite db to an S3-compatible bucket; restores missing dbs on start.'
+    dbs = listify(dbs)
+    for p in dbs:
+        if not str(p).startswith('/'): raise ValueError(f'Litestream needs absolute db paths inside the container, got {p!r}')
+        if vols is not None and not _under(p, vols): raise ValueError(f'db {p!r} is not inside the mounted volumes {listify(vols)}')
+    keys = {'access-key-id': '${LITESTREAM_ACCESS_KEY_ID}', 'secret-access-key': '${LITESTREAM_SECRET_ACCESS_KEY}'}
+    def rep(p): return dict(type='s3', bucket=bucket, path='/'.join(filter(None, [prefix, Path(p).name])), region=region,
+                            **keys, **({'endpoint': endpoint} if endpoint else {}))
+    d = dict(snapshot=dict(interval=snapshot, retention=retention), validation=dict(interval='12h'),
+             dbs=[{'path': str(p), 'restore-if-db-not-exists': True, 'replica': rep(p)} for p in dbs])
+    y = yaml.safe_dump(d, sort_keys=False)
+    Path(conf).write_text(y)
+    return y
+
+def litestream_svc(vols='/app/data', conf='litestream.yml', env_file='.env', image='litestream/litestream:0.5', **kw):
+    'Litestream sidecar kwargs for Compose.svc(): mounts the app volumes holding the dbs and the config.'
+    if env_file: kw['env_file'] = listify(env_file)
+    return dict(image=image, command='replicate', restart='unless-stopped',
+                volumes=vols_to_binds(vols) + [f'./{Path(conf).name}:/etc/litestream.yml'], **kw)
 
 # %% ../nbs/00_core.ipynb #37f0a632
 def mv_skill_md(dry_run=True, dir=None) -> None:
