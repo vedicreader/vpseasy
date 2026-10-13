@@ -150,3 +150,8 @@ checklink/cookies.txt
 
 # Quarto
 .quarto
+
+# written by the caddy_stack test cells
+nbs/Caddyfile
+nbs/Dockerfile
+nbs/docker-compose.yml

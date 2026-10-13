@@ -14,10 +14,7 @@ if pub_keys: print(pub_keys[0][:3] + '...')
 
 ## Cloud-init
 
-[`multi_init()`](https://vedicreader.github.io/vpseasy/core.html#multi_init)
-— local Multipass VMs (no UFW).
-[`vps_init()`](https://vedicreader.github.io/vpseasy/core.html#vps_init)
-— production (UFW, fail2ban, Docker).
+[`multi_init()`](https://vedicreader.github.io/vpseasy/core.html#multi_init) — local Multipass VMs (no UFW). [`vps_init()`](https://vedicreader.github.io/vpseasy/core.html#vps_init) — production (UFW, fail2ban, Docker).
 
 ``` python
 _vm = 'testvm'
@@ -103,11 +100,7 @@ print(ci.yaml)
 
 ## Local testing with Multipass
 
-Requires [Multipass](https://multipass.run) installed. Pass
-`cloud_init=mi` directly to `mp.launch()`. Use `docker=True` in
-[`multi_init()`](https://vedicreader.github.io/vpseasy/core.html#multi_init)
-if your app needs Docker pre-installed (adds ~2 min for install +
-reboot).
+Requires [Multipass](https://multipass.run) installed. Pass `cloud_init=mi` directly to `mp.launch()`. Use `docker=True` in [`multi_init()`](https://vedicreader.github.io/vpseasy/core.html#multi_init) if your app needs Docker pre-installed (adds ~2 min for install + reboot).
 
 ``` python
 import tempfile
@@ -150,10 +143,7 @@ mp.rm(_vm)
 
 ## Provision and deploy on Hetzner
 
-Set `HCLOUD_TOKEN` in your environment.
-[`hetzner_deploy()`](https://vedicreader.github.io/vpseasy/core.html#hetzner_deploy)
-provisions the server, waits for cloud-init, and deploys in one call.
-It’s idempotent — re-running against an existing server just redeploys.
+Set `HCLOUD_TOKEN` in your environment. [`hetzner_deploy()`](https://vedicreader.github.io/vpseasy/core.html#hetzner_deploy) provisions the server, waits for cloud-init, and deploys in one call. It’s idempotent — re-running against an existing server just redeploys.
 
 ``` python
 hz = Hetzner()
@@ -260,15 +250,7 @@ print('servers', o())
 
 ## Lightsail
 
-`pip install 'vpseasy[aws]'` and set `AWS_PROFILE` (any standard AWS
-credential source works).
-[`Lightsail`](https://vedicreader.github.io/vpseasy/core.html#lightsail)
-has the same methods as
-[`Hetzner`](https://vedicreader.github.io/vpseasy/core.html#hetzner), so
-[`vps_deploy()`](https://vedicreader.github.io/vpseasy/core.html#vps_deploy)
-takes either. `create()` is idempotent, attaches a static IP, opens only
-port 22 (traffic arrives through the Cloudflare tunnel) and turns on
-daily snapshots. Region defaults to Sydney (`ap-southeast-2`).
+`pip install 'vpseasy[aws]'` and set `AWS_PROFILE` (any standard AWS credential source works). [`Lightsail`](https://vedicreader.github.io/vpseasy/core.html#lightsail) has the same methods as [`Hetzner`](https://vedicreader.github.io/vpseasy/core.html#hetzner), so [`vps_deploy()`](https://vedicreader.github.io/vpseasy/core.html#vps_deploy) takes either. `create()` is idempotent, attaches a static IP, opens only port 22 (traffic arrives through the Cloudflare tunnel) and turns on daily snapshots. Region defaults to Sydney (`ap-southeast-2`).
 
 ``` python
 ls = Lightsail()
@@ -276,14 +258,7 @@ r = vps_deploy('lh', _app, ls, bundle='small_3_2')
 print(f'Deployed at {r.ip}, key: {r.key}')
 ```
 
-Lightsail runs user data as a shell script rather than cloud-config, so
-`create()` converts
-[`vps_init()`](https://vedicreader.github.io/vpseasy/core.html#vps_init)
-YAML with
-[`cloud_init_sh()`](https://vedicreader.github.io/vpseasy/core.html#cloud_init_sh).
-The script keeps the YAML verbatim, applies the same settings, and
-touches `/var/lib/vpseasy/ready` for
-[`wait_ready()`](https://vedicreader.github.io/vpseasy/core.html#wait_ready):
+Lightsail runs user data as a shell script rather than cloud-config, so `create()` converts [`vps_init()`](https://vedicreader.github.io/vpseasy/core.html#vps_init) YAML with [`cloud_init_sh()`](https://vedicreader.github.io/vpseasy/core.html#cloud_init_sh). The script keeps the YAML verbatim, applies the same settings, and touches `/var/lib/vpseasy/ready` for [`wait_ready()`](https://vedicreader.github.io/vpseasy/core.html#wait_ready):
 
 ``` python
 ud = cloud_init_sh(vps_init('demo', ['ssh-ed25519 AAAA... demo']).yaml)
@@ -308,20 +283,9 @@ print(ud[ud.index('hostnamectl'):][:600])
 
 ## Docker Compose helpers
 
-Any app that dockeasy can build — FastHTML, FastAPI, Go, Rust, Node —
-follows the same production Compose shape when deployed behind
-Cloudflare Tunnel: an `app` service, a `caddy` reverse proxy, a
-`cloudflared` tunnel container, a shared `web` network, and two named
-volumes for Caddy state.
+Any app that dockeasy can build — FastHTML, FastAPI, Go, Rust, Node — follows the same production Compose shape when deployed behind Cloudflare Tunnel: an `app` service, a `caddy` reverse proxy, a `cloudflared` tunnel container, a shared `web` network, and two named volumes for Caddy state.
 
-[`caddy_stack()`](https://vedicreader.github.io/vpseasy/core.html#caddy_stack)
-generates that structure from a domain and any dockeasy Dockerfile
-object.
-[`vols_to_binds()`](https://vedicreader.github.io/vpseasy/core.html#vols_to_binds)
-converts absolute container paths to local bind mounts. The `root=`
-argument saves all three files (`Dockerfile`, `docker-compose.yml`,
-`Caddyfile`); without it the `Compose` object is returned without
-writing anything.
+[`caddy_stack()`](https://vedicreader.github.io/vpseasy/core.html#caddy_stack) generates that structure from a domain and any dockeasy Dockerfile object. [`vols_to_binds()`](https://vedicreader.github.io/vpseasy/core.html#vols_to_binds) converts absolute container paths to local bind mounts. The `root=` argument saves all three files (`Dockerfile`, `docker-compose.yml`, `Caddyfile`); without it the `Compose` object is returned without writing anything.
 
 ``` python
 d = Path(tempfile.mkdtemp())
@@ -367,23 +331,14 @@ print(c)
 
 ## Litestream backups
 
-Litestream streams each SQLite db to an S3-compatible bucket: a
-Lightsail bucket, AWS S3 or Cloudflare R2
-(`endpoint='https://<account>.r2.cloudflarestorage.com'`,
-`region='auto'`).
-[`Lightsail.bucket()`](https://vedicreader.github.io/vpseasy/core.html#lightsail.bucket)
-creates the bucket and an access key; put them in `.env` as
-`LITESTREAM_ACCESS_KEY_ID` / `LITESTREAM_SECRET_ACCESS_KEY`. Lightsail
-allows two keys per bucket and shows each secret once.
+Litestream streams each SQLite db to an S3-compatible bucket: a Lightsail bucket, AWS S3 or Cloudflare R2 (`endpoint='https://<account>.r2.cloudflarestorage.com'`, `region='auto'`). [`Lightsail.bucket()`](https://vedicreader.github.io/vpseasy/core.html#lightsail.bucket) creates the bucket and an access key; put them in `.env` as `LITESTREAM_ACCESS_KEY_ID` / `LITESTREAM_SECRET_ACCESS_KEY`. Lightsail allows two keys per bucket and shows each secret once.
 
 ``` python
 b = Lightsail().bucket('lh-backups')
 b.bucket, b.endpoint, b.key_id
 ```
 
-[`litestream_conf()`](https://vedicreader.github.io/vpseasy/core.html#litestream_conf)
-writes `litestream.yml`. Db paths are container paths inside the app’s
-volumes; each replica lives under `<prefix>/<db path>`:
+[`litestream_conf()`](https://vedicreader.github.io/vpseasy/core.html#litestream_conf) writes `litestream.yml`. Db paths are container paths inside the app’s volumes; each replica lives under `<prefix>/<db path>`:
 
 ``` python
 d = Path(tempfile.mkdtemp())
@@ -407,10 +362,7 @@ print(litestream_conf(['/app/data/app.db'], 'lh-backups', endpoint='https://s3.a
         secret-access-key: ${LITESTREAM_SECRET_ACCESS_KEY}
         endpoint: https://s3.ap-southeast-2.amazonaws.com
 
-`caddy_stack(..., litestream=...)` adds two services. A one-shot
-`litestream-restore` must finish before `app` starts, so a fresh server
-gets its db back before the app can create an empty one; the
-`litestream` replicate service starts after `app`:
+`caddy_stack(..., litestream=...)` adds two services. A one-shot `litestream-restore` must finish before `app` starts, so a fresh server gets its db back before the app can create an empty one; the `litestream` replicate service starts after `app`:
 
 ``` python
 c = caddy_stack('lh.example.com', fasthtml_app(vols=['/app/data']), vols=['/app/data'], root=d,
@@ -439,8 +391,7 @@ print(yaml.safe_dump({k: {o: v[o] for o in ('image', 'command', 'depends_on', 'r
 
 ## Install agent skill
 
-Copies `SKILL.md` to `.agents/skills/vpseasy/` (project-local) and
-`~/.claude/skills/vpseasy/` (global Claude Code).
+Copies `SKILL.md` to `.agents/skills/vpseasy/` (project-local) and `~/.claude/skills/vpseasy/` (global Claude Code).
 
 ``` python
 mv_skill_md(dry_run=True)

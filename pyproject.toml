@@ -34,6 +34,9 @@ vpseasy = "vpseasy._modidx:d"
 aws = [
     "boto3>=1.40",
 ]
+dev = [
+    "boto3>=1.40",
+]
 
 [tool.hatch.version]
 path = "vpseasy/__init__.py"
@@ -53,6 +56,6 @@ include = [
 dev = [
     "boto3>=1.43.112",
     "koshas>=0.0.9",
-    "nbdev>=3.0.12",
+    "nbdev>=3.3.25",
     "notebook>=7.5.5",
 ]

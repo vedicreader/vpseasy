@@ -7,3 +7,8 @@ website:
   description: "create resources, deploy code in prod and dev. supports Hetzner, Lightsail and Multipass"
   repo-branch: main
   repo-url: "https://github.com/vedicreader/vpseasy"
+
+format-links:
+  - html
+  - format: commonmark
+    text: Markdown
