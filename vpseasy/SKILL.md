@@ -58,7 +58,8 @@ All providers share `servers()`, `get(name)`, `server_ip(name)`, `create(name, c
 | `vols_to_binds(vols)` | `list[str]` | `["/app/data"]` -> `["./data:/app/data"]` for Compose bind mounts |
 | `caddy_stack(domain, df, vols, root, ...)` | `Compose` | app + caddy + cloudflared + web network; saves files if `root=` given |
 | `litestream_conf(dbs, bucket, endpoint, region, ...)` | `str` | Write Litestream 0.5 `litestream.yml` (restores missing dbs on start) |
-| `litestream_svc(vols, conf, env_file)` | `dict` | Litestream sidecar kwargs for `Compose.svc()` |
+| `litestream_svc(vols, conf, env_file, cmd)` | `dict` | Litestream service kwargs for `Compose.svc()` (`cmd='replicate'` or a `restore ...`) |
+| `cloud_init_sh(yaml)` | `str` | Shell-script equivalent of `vps_init()` cloud-config (used for Lightsail user data) |
 | `mv_skill_md(dry_run, dir)` | `None` | Install SKILL.md to `.agents/` and `~/.claude/` |
 
 ## Common patterns
@@ -169,7 +170,7 @@ mv_skill_md(dry_run=False)   # writes to .agents/skills/vpseasy/ and ~/.claude/s
 - `ssh_keys` on `Hetzner.create()` injects into the **root** user only — not the `deploy` user created by cloud-init. Passing both `ssh_keys` and `cloud_init` raises `ValueError`.
 - `cloud-init status` returns exit code 2 ("done with warnings") on Ubuntu 24.04 — `chk_cloud_init` uses `check=False` to handle this correctly.
 - SSH `StrictHostKeyChecking=accept-new` silently accepts new hosts but rejects changed host keys. `hetzner_deploy` runs `ssh-keygen -R <ip>` after provisioning to clear stale `known_hosts` entries when an IP is reused.
-- Lightsail does not apply `#cloud-config` user data as-is (live test 2026-10-13: the cloud-init `deploy` user was never created), so `vps_deploy(..., Lightsail())` currently times out in `wait_ready`. Wrapping the YAML in a bash launch script is the likely fix, still unverified.
+- Lightsail runs user data as a shell script, so `Lightsail.create()` converts `vps_init()` cloud-config with `cloud_init_sh()` (supports hostname, users, write_files, apt conf, packages, runcmd; other keys raise). Progress: `/var/log/vpseasy-init.log`, done marker `/var/lib/vpseasy/ready`.
 - Lightsail bundle ids change over time (`small_3_0` is gone; current ones end in `_3_2`). List them with `Lightsail()._c.get_bundles()`.
-- Litestream db paths must be absolute container paths inside one of the app's `vols`; `litestream_conf` raises `ValueError` otherwise. `app` gets `depends_on: [litestream]`, which orders container start but does not wait for the restore to finish.
+- Litestream db paths must be absolute container paths inside one of the app's `vols`; `litestream_conf` raises `ValueError` otherwise. A one-shot `litestream-restore` service must complete before `app` starts (`condition: service_completed_successfully`); the `litestream` replicate service starts after `app`.
 - Always use the private key path (no `.pub`) with `-i`. The public key is for `authorized_keys`, not for SSH client auth.
