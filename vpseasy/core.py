@@ -11,7 +11,7 @@ __all__ = ['mp', 'dock_cmd', 'Multipass', 'deploy_mp', 'keygen', 'gen_key', 'vps
            'litestream_svc', 'mv_skill_md']
 
 # %% ../nbs/00_core.ipynb #8795cffa
-import getpass, json, os, shlex, subprocess, tempfile, time, yaml
+import getpass, json, os, re, shlex, subprocess, tempfile, time, yaml
 from contextlib import contextmanager, suppress
 from dockeasy import Cli, env_get, Compose, caddy_svc, cloudflared_svc, fasthtml_app
 from fastcore.all import L, Path, run, listify, AttrDict, AttrDictDefault, delegates, modified_env
@@ -140,30 +140,46 @@ class Hetzner:
         return [k['name'] for k in self.keys()]
 
 # %% ../nbs/00_core.ipynb #cish01
-_ci_keys = {'hostname', 'users', 'write_files', 'apt', 'packages', 'runcmd', 'package_update', 'package_upgrade'}
-_ci_skip = {'preserve_hostname', 'disable_root', 'ssh_pwauth', 'power_state'}
+_ci_keys = {'hostname', 'users', 'write_files', 'apt', 'packages', 'runcmd', 'package_update', 'package_upgrade', 'ssh_pwauth'}
+_ci_skip = {'preserve_hostname', 'disable_root', 'power_state'}
+_user_keys = {'name', 'groups', 'shell', 'sudo', 'ssh_authorized_keys'}
 def _heredoc(path, content, eof='VPSEASY_EOF'): return f"cat > {shlex.quote(str(path))} <<'{eof}'\n{content.rstrip(chr(10))}\n{eof}"
 
+def _perms(m):
+    'cloud-init file mode (int or octal string) → validated octal string'
+    m = format(m, 'o') if isinstance(m, int) else str(m)
+    if not re.fullmatch(r'[0-7]{3,4}', m): raise ValueError(f'invalid write_files permissions {m!r}')
+    return m
+
 def cloud_init_sh(cloud_init):
-    'POSIX shell equivalent of a vps_init() cloud-config, for providers that run user data as a script (Lightsail).'
+    '''POSIX shell equivalent of a vps_init() cloud-config, for providers that run user data as a script (Lightsail).
+    Skips power_state (no reboot), preserve_hostname and disable_root (root login is already off on Ubuntu images).'''
     c = yaml.safe_load(cloud_init) or {}
     if bad := set(c) - _ci_keys - _ci_skip: raise ValueError(f'cloud_init_sh does not support cloud-config keys {sorted(bad)}')
-    q, apt = shlex.quote, 'DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=600 -y'
-    s = ['#!/bin/bash', 'set -e', 'mkdir -p /var/lib/vpseasy', 'exec >>/var/log/vpseasy-init.log 2>&1',
+    q = shlex.quote
+    apt = ('DEBIAN_FRONTEND=noninteractive apt-get -y -o DPkg::Lock::Timeout=600 '
+           '-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold')
+    s = ['#!/bin/bash', 'set -eu', 'if [ -n "${BASH_VERSION:-}" ]; then set -o pipefail; fi',
+         'mkdir -p /var/lib/vpseasy', 'rm -f /var/lib/vpseasy/error /var/lib/vpseasy/ready', 'exec >>/var/log/vpseasy-init.log 2>&1',
          "trap '[ -f /var/lib/vpseasy/ready ] || touch /var/lib/vpseasy/error' EXIT",
          _heredoc('/var/lib/vpseasy/cloud-config.yaml', cloud_init)]
     if h := c.get('hostname'): s.append(f'hostnamectl set-hostname {q(h)}')
+    if c.get('ssh_pwauth') is False: s.append("echo 'PasswordAuthentication no' > /etc/ssh/sshd_config.d/01-vpseasy.conf")
     for u in c.get('users', []):
+        if u == 'default': continue
+        if bad := set(u) - _user_keys: raise ValueError(f'cloud_init_sh does not support user keys {sorted(bad)}')
         un = u['name']; n, home, sd = q(un), f'/home/{un}', f'/etc/sudoers.d/90-vpseasy-{un}'
         s.append(f"id -u {n} >/dev/null 2>&1 || useradd -m -s {q(u.get('shell', '/bin/bash'))} {n}")
-        if g := u.get('groups'): s.append(f"usermod -aG {q(','.join(listify(g)))} {n}")
+        g = u.get('groups')
+        if g: s.append(f"usermod -aG {q(','.join(x.strip() for x in (g.split(',') if isinstance(g, str) else g)))} {n}")
         if r := u.get('sudo'): s += [_heredoc(sd, '\n'.join(f'{un} {o}' for o in listify(r))), f'chmod 440 {sd}']
         if k := u.get('ssh_authorized_keys'):
-            s += [f'install -d -m 700 -o {n} -g {n} {home}/.ssh', _heredoc(f'{home}/.ssh/authorized_keys', '\n'.join(k)),
+            s += [f'install -d -m 700 -o {n} -g {n} {home}/.ssh', _heredoc(f'{home}/.ssh/authorized_keys', '\n'.join(listify(k))),
                   f'chown {n}:{n} {home}/.ssh/authorized_keys', f'chmod 600 {home}/.ssh/authorized_keys']
     for f in c.get('write_files', []):
+        fp = q(f['path'])
         s += [f"mkdir -p {q(str(Path(f['path']).parent))}", _heredoc(f['path'], f.get('content', '')),
-              f"chmod {f.get('permissions', '0644')} {q(f['path'])}", f"chown {f.get('owner', 'root:root')} {q(f['path'])}"]
+              f"chmod {_perms(f.get('permissions', '0644'))} {fp}", f"chown {q(f.get('owner', 'root:root'))} {fp}"]
     if conf := (c.get('apt') or {}).get('conf'): s.append(_heredoc('/etc/apt/apt.conf.d/94vpseasy', conf))
     if c.get('package_update') or c.get('package_upgrade') or c.get('packages'): s.append(f'{apt} update')
     if c.get('package_upgrade'): s.append(f'{apt} upgrade')
@@ -172,6 +188,8 @@ def cloud_init_sh(cloud_init):
     return '\n'.join(s + ['touch /var/lib/vpseasy/ready', ''])
 
 # %% ../nbs/00_core.ipynb #c48ff3ed
+class _Secret(str): __repr__ = lambda self: "'***'"
+
 class Lightsail:
     'AWS Lightsail VPS provider via boto3. Credentials from the AWS chain (e.g. AWS_PROFILE from SSO).'
     def __init__(self, region='ap-southeast-2', profile=None):
@@ -206,6 +224,7 @@ class Lightsail:
         except self._c.exceptions.InvalidInputException as e:
             if 'already' not in str(e).lower(): raise
         self._c.attach_static_ip(staticIpName=ip, instanceName=name)
+        return self._c.get_static_ip(staticIpName=ip)['staticIp']['ipAddress']
 
     def create(self, name, bundle='small_3_2', blueprint='ubuntu_24_04', zone=None, cloud_init=None,
                static_ip=True, ports=(22,), snapshots='16:00'):
@@ -221,7 +240,7 @@ class Lightsail:
             resp = self._c.create_instances(instanceNames=[name], availabilityZone=zone or f'{self.region}a',
                                             blueprintId=blueprint, bundleId=bundle, userData=cloud_init or '')
         ip = self.server_ip(name)
-        if static_ip: self._static_ip(name); ip = self.server_ip(name)
+        if static_ip: ip = self._static_ip(name)
         if ports is not None:
             self._c.put_instance_public_ports(instanceName=name,
                 portInfos=[dict(fromPort=p, toPort=p, protocol='tcp') for p in ports])
@@ -237,12 +256,13 @@ class Lightsail:
             with suppress(self._c.exceptions.NotFoundException): self._c.release_static_ip(staticIpName=f'{name}-ip')
 
     def bucket(self, name, bundle='small_1_0'):
-        'Create the bucket if missing and a new access key. Returns AttrDict(bucket, region, endpoint, key_id, secret).'
+        '''Create the bucket if missing and a new access key (Lightsail allows two per bucket, so a third call fails until one
+        is deleted). Returns AttrDict(bucket, region, endpoint, key_id, secret); the secret is only available now.'''
         try: self._c.get_buckets(bucketName=name)
         except self._c.exceptions.NotFoundException: self._c.create_bucket(bucketName=name, bundleId=bundle)
         k = self._c.create_bucket_access_key(bucketName=name)['accessKey']
         return AttrDict(bucket=name, region=self.region, endpoint=f'https://s3.{self.region}.amazonaws.com',
-                        key_id=k['accessKeyId'], secret=k['secretAccessKey'])
+                        key_id=k['accessKeyId'], secret=_Secret(k['secretAccessKey']))
 
 # %% ../nbs/00_core.ipynb #0f2c0407
 def _ssh(host, user, key, port):
@@ -462,7 +482,7 @@ def caddy_stack(domain, df, vols=None, env_file='.env', cloudflared=True, root=N
     df.save(Path(root)/'Dockerfile')
     v,env = vols_to_binds(vols) if vols else None, listify(env_file) if env_file else None
     dbs = listify(litestream['dbs']) if litestream else []
-    rs = ['litestream-restore'] if len(dbs) == 1 else [f'litestream-restore-{Path(p).stem}' for p in dbs]
+    rs = [_restore_name(p, len(dbs)) for p in dbs]
     c = (Compose()
          .svc('app', build=df, volumes=v, env_file=env, restart='unless-stopped', networks=['web'],
               depends_on={r: dict(condition='service_completed_successfully') for r in rs} or None)
@@ -485,19 +505,21 @@ def _under(p, vols):
 
 def litestream_conf(dbs, bucket, endpoint=None, region='auto', prefix=None, conf='litestream.yml', retention='72h',
                     snapshot='24h', vols=None):
-    'Write a Litestream 0.5 config replicating each sqlite db to an S3-compatible bucket; restores missing dbs on start.'
+    'Write a Litestream 0.5 config replicating each sqlite db to an S3-compatible bucket under prefix/<db path>.'
     dbs = listify(dbs)
     for p in dbs:
         if not str(p).startswith('/'): raise ValueError(f'Litestream needs absolute db paths inside the container, got {p!r}')
         if vols is not None and not _under(p, vols): raise ValueError(f'db {p!r} is not inside the mounted volumes {listify(vols)}')
     keys = {'access-key-id': '${LITESTREAM_ACCESS_KEY_ID}', 'secret-access-key': '${LITESTREAM_SECRET_ACCESS_KEY}'}
-    def rep(p): return dict(type='s3', bucket=bucket, path='/'.join(filter(None, [prefix, Path(p).name])), region=region,
+    def rep(p): return dict(type='s3', bucket=bucket, path='/'.join(filter(None, [prefix, str(p).lstrip('/')])), region=region,
                             **keys, **({'endpoint': endpoint} if endpoint else {}))
     d = dict(snapshot=dict(interval=snapshot, retention=retention), validation=dict(interval='12h'),
-             dbs=[{'path': str(p), 'restore-if-db-not-exists': True, 'replica': rep(p)} for p in dbs])
+             dbs=[{'path': str(p), 'replica': rep(p)} for p in dbs])
     y = yaml.safe_dump(d, sort_keys=False)
     Path(conf).write_text(y)
     return y
+
+def _restore_name(p, n): return 'litestream-restore' if n == 1 else 'litestream-restore-' + re.sub(r'[^a-z0-9]+', '-', str(Path(p).with_suffix('')).lower()).strip('-')
 
 def litestream_svc(vols='/app/data', conf='litestream.yml', env_file='.env', image='litestream/litestream:0.5', cmd='replicate',
                    restart='unless-stopped', **kw):

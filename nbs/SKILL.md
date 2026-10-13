@@ -45,7 +45,7 @@ All providers share `servers()`, `get(name)`, `server_ip(name)`, `create(name, c
 | `Hetzner().delete(name)` | `None` | Delete server |
 | `Hetzner().key_names()` | `list[str]` | SSH key names registered in Hetzner (root access only) |
 | `Lightsail().create(name, bundle, ...)` | `AttrDict(ip, name, key, resp)` | Provision Lightsail instance (idempotent, static IP, port 22 only, daily snapshots) |
-| `Lightsail().bucket(name)` | `AttrDict(bucket, region, endpoint, key_id, secret)` | Bucket (created if missing) + new access key for backups |
+| `Lightsail().bucket(name)` | `AttrDict(bucket, region, endpoint, key_id, secret)` | Bucket (created if missing) + new access key for backups; Lightsail allows two keys per bucket, secret shown only once |
 | `vps_deploy(name, src, provider, ...)` | `AttrDict(ip, name, key)` | Full pipeline on any provider: provision → wait → deploy (idempotent) |
 | `hetzner_deploy(name, src, ...)` | `AttrDict(ip, name, key)` | `vps_deploy` on Hetzner |
 | `wait_ssh(host, u, k, tout)` | `True` | Poll until SSH is up |
@@ -57,7 +57,7 @@ All providers share `servers()`, `get(name)`, `server_ip(name)`, `create(name, c
 | `deploy(host, src, path, user, build, key)` | `None` | `sync` + `docker compose up -d` |
 | `vols_to_binds(vols)` | `list[str]` | `["/app/data"]` -> `["./data:/app/data"]` for Compose bind mounts |
 | `caddy_stack(domain, df, vols, root, ...)` | `Compose` | app + caddy + cloudflared + web network; saves files if `root=` given |
-| `litestream_conf(dbs, bucket, endpoint, region, ...)` | `str` | Write Litestream 0.5 `litestream.yml` (restores missing dbs on start) |
+| `litestream_conf(dbs, bucket, endpoint, region, ...)` | `str` | Write Litestream 0.5 `litestream.yml` (replica path `<prefix>/<db path>`) |
 | `litestream_svc(vols, conf, env_file, cmd)` | `dict` | Litestream service kwargs for `Compose.svc()` (`cmd='replicate'` or a `restore ...`) |
 | `cloud_init_sh(yaml)` | `str` | Shell-script equivalent of `vps_init()` cloud-config (used for Lightsail user data) |
 | `mv_skill_md(dry_run, dir)` | `None` | Install SKILL.md to `.agents/` and `~/.claude/` |
@@ -169,8 +169,8 @@ mv_skill_md(dry_run=False)   # writes to .agents/skills/vpseasy/ and ~/.claude/s
 
 - `ssh_keys` on `Hetzner.create()` injects into the **root** user only — not the `deploy` user created by cloud-init. Passing both `ssh_keys` and `cloud_init` raises `ValueError`.
 - `cloud-init status` returns exit code 2 ("done with warnings") on Ubuntu 24.04 — `chk_cloud_init` uses `check=False` to handle this correctly.
-- SSH `StrictHostKeyChecking=accept-new` silently accepts new hosts but rejects changed host keys. `hetzner_deploy` runs `ssh-keygen -R <ip>` after provisioning to clear stale `known_hosts` entries when an IP is reused.
+- SSH `StrictHostKeyChecking=accept-new` silently accepts new hosts but rejects changed host keys. `vps_deploy` (and so `hetzner_deploy`) runs `ssh-keygen -R <ip>` after provisioning to clear stale `known_hosts` entries when an IP is reused.
 - Lightsail runs user data as a shell script, so `Lightsail.create()` converts `vps_init()` cloud-config with `cloud_init_sh()` (supports hostname, users, write_files, apt conf, packages, runcmd; other keys raise). Progress: `/var/log/vpseasy-init.log`, done marker `/var/lib/vpseasy/ready`.
 - Lightsail bundle ids change over time (`small_3_0` is gone; current ones end in `_3_2`). List them with `Lightsail()._c.get_bundles()`.
-- Litestream db paths must be absolute container paths inside one of the app's `vols`; `litestream_conf` raises `ValueError` otherwise. A one-shot `litestream-restore` service must complete before `app` starts (`condition: service_completed_successfully`); the `litestream` replicate service starts after `app`.
+- Litestream db paths must be absolute container paths inside one of the app's `vols`; `litestream_conf` raises `ValueError` otherwise. A one-shot `litestream-restore` service must complete before `app` starts (`condition: service_completed_successfully`); the `litestream` replicate service starts after `app`. Verified end to end with `litestream/litestream:0.5` (v0.5.17): empty bucket → restore exits 0; wiped server → db restored before `app`.
 - Always use the private key path (no `.pub`) with `-i`. The public key is for `authorized_keys`, not for SSH client auth.
