@@ -45,6 +45,7 @@ path = "vpseasy/__init__.py"
 packages = ["vpseasy"]
 
 [tool.nbdev]
+tst_flags = "multipass"  # cells that need a local Multipass install; run with nbdev-test --flags multipass
 
 [tool.hatch.build.targets.sdist]
 include = [
