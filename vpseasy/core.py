@@ -6,8 +6,8 @@ Docs: https://vedicreader.github.io/vpseasycore.html.md"""
 
 # %% auto #0
 __all__ = ['mp', 'dock_cmd', 'Multipass', 'deploy_mp', 'keygen', 'gen_key', 'vps_init', 'multi_init', 'Hetzner', 'Lightsail',
-           'run_ssh', 'sync', 'chk_docker', 'deploy', 'wait_ssh', 'chk_cloud_init', 'wait_ready', 'hetzner_deploy',
-           'load_pub_keys', 'vols_to_binds', 'caddy_stack', 'mv_skill_md']
+           'run_ssh', 'sync', 'chk_docker', 'deploy', 'wait_ssh', 'chk_cloud_init', 'wait_ready', 'vps_deploy',
+           'hetzner_deploy', 'load_pub_keys', 'vols_to_binds', 'caddy_stack', 'mv_skill_md']
 
 # %% ../nbs/00_core.ipynb #8795cffa
 import getpass, json, os, shlex, subprocess, tempfile, time
@@ -104,6 +104,10 @@ class Hetzner:
         s = self._c.servers.get_by_name(name)
         if not s: raise ValueError(f'Server {name!r} not found')
         return s.public_net.ipv4.ip
+
+    def get(self, name):
+        'Server by name, or None'
+        return self._c.servers.get_by_name(name)
 
     def create(self, name, image='ubuntu-24.04', server_type='cx23', location=None, cloud_init=None, ssh_keys=None, key=None):
         '''Create a server. cloud_init: YAML string or AttrDict(yaml, key) from vps_init(). Returns AttrDict(ip, name, key, resp).
@@ -356,43 +360,42 @@ def wait_ready(host,
     raise TimeoutError(f'cloud-init on {host} not done after {tout * (retries + 1)}s ({retries + 1} attempts)')
 
 # %% ../nbs/00_core.ipynb #2bf3f571
-def hetzner_deploy(name, # server name (also used for SSH key slug if key not given)
-                   src,  # local path to sync and deploy
-                   hz=None, # optional Hetzner() instance — creates one if not given
-                   user='deploy', # remote username to deploy with (must match cloud-init user)
-                   key=None, # optional SSH private key path or Path object (overrides name-based lookup of ~/.ssh/<name>)
-                   image='ubuntu-24.04', # Hetzner image slug
-                   server_type='cx23', # Hetzner server type slug
-                   location=None, # Hetzner location slug e.g. 'hel1' (optional)
-                   path='/srv/app', # remote path to sync to and deploy at
-                   build=True, # whether to pass --build to docker compose up
-                   include=None, # rsync include (whitelist) patterns
-                   exclude=None, # rsync exclude (blacklist) patterns
-                   extra=None, # extra rsync flags forwarded to sync() e.g. '--checksum' or ['--ignore-times','--partial']
-                   key_pass=None, # passphrase for the SSH key, if it's encrypted
-                   password=None, # server password for SSH auth (alternative to key-based auth)
-                   tout=600, # seconds to wait for SSH and cloud-init each before retrying (default 10 minutes)
-                   retries=2, # cloud-init retries before giving up and raising TimeoutError
-                   verbose=True # whether to print verbose logs during wait and deploy steps
+def vps_deploy(name, # server name (also used for SSH key slug if key not given)
+               src,  # local path to sync and deploy
+               provider, # Hetzner(), Lightsail() or anything with get, server_ip and create
+               user='deploy', # remote username to deploy with (must match cloud-init user)
+               key=None, # optional SSH private key path or Path object (overrides name-based lookup of ~/.ssh/<name>)
+               path='/srv/app', # remote path to sync to and deploy at
+               build=True, # whether to pass --build to docker compose up
+               include=None, # rsync include (whitelist) patterns
+               exclude=None, # rsync exclude (blacklist) patterns
+               extra=None, # extra rsync flags forwarded to sync() e.g. '--checksum' or ['--ignore-times','--partial']
+               key_pass=None, # passphrase for the SSH key, if it's encrypted
+               password=None, # server password for SSH auth (alternative to key-based auth)
+               tout=600, # seconds to wait for SSH and cloud-init each before retrying (default 10 minutes)
+               retries=2, # cloud-init retries before giving up and raising TimeoutError
+               verbose=True, # whether to print verbose logs during wait and deploy steps
+               **create_kw # passed to provider.create(), e.g. server_type= or bundle=
 ):
-    'Full pipeline: provision Hetzner VPS (idempotent) → wait for cloud-init → deploy. Returns AttrDict(ip, name, key).'
-    hz = hz or Hetzner()
-    ex = hz._c.servers.get_by_name(name)
+    'Provision on any provider (idempotent) → wait for cloud-init → deploy. Returns AttrDict(ip, name, key).'
     key_pass, password = _resolve_cred(key_pass, password)
-    if ex:
-        ip, key = ex.public_net.ipv4.ip, _res_key(key=key, name=name)
-        if verbose: print(f'Server {name} already exists at {ip}, checking cloud-init ...')
-        wait_ready(ip, u=user, k=key, tout=tout, retries=retries, key_pass=key_pass, password=password, verbose=verbose)
+    if provider.get(name):
+        ip, key = provider.server_ip(name), _res_key(key=key, name=name)
+        if verbose: print(f'{name} already exists at {ip}, checking cloud-init ...')
     else:
-        ci = vps_init(name)
-        svr = hz.create(name, image=image, server_type=server_type, location=location, cloud_init=ci)
+        svr = provider.create(name, cloud_init=vps_init(name), **create_kw)
         ip, key = svr.ip, svr.key
         subprocess.run(['ssh-keygen', '-R', ip], capture_output=True)
-        if verbose: print(f'Server {name} provisioning at {ip} ...')
-        wait_ready(ip, u=user, k=key, tout=tout, retries=retries, key_pass=key_pass, password=password, verbose=verbose)
+        if verbose: print(f'{name} provisioning at {ip} ...')
+    wait_ready(ip, u=user, k=key, tout=tout, retries=retries, key_pass=key_pass, password=password, verbose=verbose)
     deploy(ip, src, user=user, path=path, build=build, key=key, include=include, exclude=exclude,
            extra=extra, key_pass=key_pass, password=password, verbose=verbose)
     return AttrDict(ip=ip, name=name, key=key)
+
+@delegates(vps_deploy, but=['provider'])
+def hetzner_deploy(name, src, hz=None, image='ubuntu-24.04', server_type='cx23', location=None, **kwargs):
+    'vps_deploy on Hetzner. Kept for existing callers.'
+    return vps_deploy(name, src, hz or Hetzner(), image=image, server_type=server_type, location=location, **kwargs)
 
 # %% ../nbs/00_core.ipynb #0929rkcanuri
 def load_pub_keys(paths=None) -> list:
