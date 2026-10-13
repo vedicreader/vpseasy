@@ -201,6 +201,14 @@ class Lightsail:
         if release_ip:
             with suppress(self._c.exceptions.NotFoundException): self._c.release_static_ip(staticIpName=f'{name}-ip')
 
+    def bucket(self, name, bundle='small_1_0'):
+        'Create the bucket if missing and a new access key. Returns AttrDict(bucket, region, endpoint, key_id, secret).'
+        try: self._c.get_buckets(bucketName=name)
+        except self._c.exceptions.NotFoundException: self._c.create_bucket(bucketName=name, bundleId=bundle)
+        k = self._c.create_bucket_access_key(bucketName=name)['accessKey']
+        return AttrDict(bucket=name, region=self.region, endpoint=f'https://s3.{self.region}.amazonaws.com',
+                        key_id=k['accessKeyId'], secret=k['secretAccessKey'])
+
 # %% ../nbs/00_core.ipynb #0f2c0407
 def _ssh(host, user, key, port):
     a = ['ssh', '-o', 'StrictHostKeyChecking=accept-new']
