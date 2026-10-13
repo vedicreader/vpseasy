@@ -29,6 +29,11 @@ Documentation = "https://vedicreader.github.io/vpseasy/"
 [project.entry-points.nbdev]
 vpseasy = "vpseasy._modidx:d"
 
+[project.optional-dependencies]
+aws = [
+    "boto3>=1.40",
+]
+
 [tool.hatch.version]
 path = "vpseasy/__init__.py"
 
@@ -45,6 +50,7 @@ include = [
 ]
 [dependency-groups]
 dev = [
+    "boto3>=1.43.112",
     "koshas>=0.0.9",
     "nbdev>=3.0.12",
     "notebook>=7.5.5",
