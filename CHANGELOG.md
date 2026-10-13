@@ -3,11 +3,9 @@
 <!-- do not remove -->
 
 ## 0.0.19
-- `Lightsail` provider (AWS, boto3 via `pip install 'vpseasy[aws]'`): idempotent `create` with static IP, port 22 only and daily snapshots; `bucket()` returns a bucket and access key for backups
-- `vps_deploy(name, src, provider)`: provider-neutral provision → cloud-init → deploy; `hetzner_deploy` now wraps it, and `Hetzner.get(name)` was added
-- Breaking (positional callers only): `hetzner_deploy`'s 4th positional parameter is now `image` (was `user`); `user`, `key`, `path`, etc. are keyword-only
-- Litestream: `litestream_conf`, `litestream_svc`, and `caddy_stack(..., litestream=dict(...))` stream SQLite dbs to S3/Lightsail/R2; a one-shot `litestream-restore` service restores missing dbs before `app` starts
-- Lightsail user data: `cloud_init_sh()` turns `vps_init()` cloud-config into a shell launch script; `chk_cloud_init` honours its `/var/lib/vpseasy` markers
+lightsail provider, vps_deploy, litestream backups (`hetzner_deploy` args after `src` are keyword-only)
+
+
 
 ## 0.0.18
 rsync progress bar

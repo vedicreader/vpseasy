@@ -21,7 +21,7 @@ if pub_keys: print(pub_keys[0][:3] + '...')
 
 ``` python
 _vm = 'testvm'
-mi = multi_init(_vm, docker=False)   # docker=False: skip install+reboot, much faster for local testing
+mi = multi_init(_vm, ['ssh-ed25519 AAAA... me'], docker=False)   # omit pub_keys to generate ~/.ssh/testvm; docker=False is faster locally
 print(mi.yaml)
 ```
 
@@ -42,10 +42,10 @@ print(mi.yaml)
       sudo:
       - ALL=(ALL) NOPASSWD:ALL
       ssh_authorized_keys:
-      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG5vF0hxKfho9gZ9nWIp5GIq+UDkZTQ+/v1lgzp+bk5K 71293@MELMAC-71293
+      - ssh-ed25519 AAAA... me
 
 ``` python
-ci = vps_init('demo-prod')
+ci = vps_init('demo-prod', ['ssh-ed25519 AAAA... me'])   # omit pub_keys to generate ~/.ssh/demo-prod
 print(ci.yaml)
 ```
 
@@ -68,7 +68,7 @@ print(ci.yaml)
       sudo:
       - ALL=(ALL) NOPASSWD:ALL
       ssh_authorized_keys:
-      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIH+XjqpWlA8Zcct/3Py1OasAupD8py5/oUlxI4359V8z 71293@MELMAC-71293
+      - ssh-ed25519 AAAA... me
     runcmd:
     - curl -fsSL https://get.docker.com | sh
     - usermod -aG docker deploy
@@ -258,6 +258,54 @@ print('servers', o())
     Deleted server.
     servers ['vedicreader-cx32-hel']
 
+## Lightsail
+
+`pip install 'vpseasy[aws]'` and set `AWS_PROFILE` (any standard AWS
+credential source works).
+[`Lightsail`](https://vedicreader.github.io/vpseasy/core.html#lightsail)
+has the same methods as
+[`Hetzner`](https://vedicreader.github.io/vpseasy/core.html#hetzner), so
+[`vps_deploy()`](https://vedicreader.github.io/vpseasy/core.html#vps_deploy)
+takes either. `create()` is idempotent, attaches a static IP, opens only
+port 22 (traffic arrives through the Cloudflare tunnel) and turns on
+daily snapshots. Region defaults to Sydney (`ap-southeast-2`).
+
+``` python
+ls = Lightsail()
+r = vps_deploy('lh', _app, ls, bundle='small_3_2')
+print(f'Deployed at {r.ip}, key: {r.key}')
+```
+
+Lightsail runs user data as a shell script rather than cloud-config, so
+`create()` converts
+[`vps_init()`](https://vedicreader.github.io/vpseasy/core.html#vps_init)
+YAML with
+[`cloud_init_sh()`](https://vedicreader.github.io/vpseasy/core.html#cloud_init_sh).
+The script keeps the YAML verbatim, applies the same settings, and
+touches `/var/lib/vpseasy/ready` for
+[`wait_ready()`](https://vedicreader.github.io/vpseasy/core.html#wait_ready):
+
+``` python
+ud = cloud_init_sh(vps_init('demo', ['ssh-ed25519 AAAA... demo']).yaml)
+print(ud[ud.index('hostnamectl'):][:600])
+```
+
+    hostnamectl set-hostname demo
+    echo 'PasswordAuthentication no' > /etc/ssh/sshd_config.d/01-vpseasy.conf
+    id -u deploy >/dev/null 2>&1 || useradd -m -s /bin/bash deploy
+    usermod -aG sudo deploy
+    cat > /etc/sudoers.d/90-vpseasy-deploy <<'VPSEASY_EOF'
+    deploy ALL=(ALL) NOPASSWD:ALL
+    VPSEASY_EOF
+    chmod 440 /etc/sudoers.d/90-vpseasy-deploy
+    install -d -m 700 -o deploy -g deploy /home/deploy/.ssh
+    cat > /home/deploy/.ssh/authorized_keys <<'VPSEASY_EOF'
+    ssh-ed25519 AAAA... demo
+    VPSEASY_EOF
+    chown deploy:deploy /home/deploy/.ssh/authorized_keys
+    chmod 600 /home/deploy/.ssh/authorized_keys
+    mkdir -p /etc/logrotat
+
 ## Docker Compose helpers
 
 Any app that dockeasy can build — FastHTML, FastAPI, Go, Rust, Node —
@@ -297,7 +345,7 @@ print(c)
         depends_on:
         - app
         volumes:
-        - /private/var/folders/kg/9vdw4mdd1fs58svgh4k1qhr09x7dqh/T/tmp_dtwwgkg/Caddyfile:/etc/caddy/Caddyfile
+        - /private/var/folders/kg/9vdw4mdd1fs58svgh4k1qhr09x7dqh/T/tmpfs6cqxh2/Caddyfile:/etc/caddy/Caddyfile
         - caddy_data:/data
         - caddy_config:/config
         networks:
@@ -316,6 +364,78 @@ print(c)
     volumes:
       caddy_data: null
       caddy_config: null
+
+## Litestream backups
+
+Litestream streams each SQLite db to an S3-compatible bucket: a
+Lightsail bucket, AWS S3 or Cloudflare R2
+(`endpoint='https://<account>.r2.cloudflarestorage.com'`,
+`region='auto'`).
+[`Lightsail.bucket()`](https://vedicreader.github.io/vpseasy/core.html#lightsail.bucket)
+creates the bucket and an access key; put them in `.env` as
+`LITESTREAM_ACCESS_KEY_ID` / `LITESTREAM_SECRET_ACCESS_KEY`. Lightsail
+allows two keys per bucket and shows each secret once.
+
+``` python
+b = Lightsail().bucket('lh-backups')
+b.bucket, b.endpoint, b.key_id
+```
+
+[`litestream_conf()`](https://vedicreader.github.io/vpseasy/core.html#litestream_conf)
+writes `litestream.yml`. Db paths are container paths inside the app’s
+volumes; each replica lives under `<prefix>/<db path>`:
+
+``` python
+d = Path(tempfile.mkdtemp())
+print(litestream_conf(['/app/data/app.db'], 'lh-backups', endpoint='https://s3.ap-southeast-2.amazonaws.com',
+                      region='ap-southeast-2', prefix='lh', conf=d/'litestream.yml'))
+```
+
+    snapshot:
+      interval: 24h
+      retention: 72h
+    validation:
+      interval: 12h
+    dbs:
+    - path: /app/data/app.db
+      replica:
+        type: s3
+        bucket: lh-backups
+        path: lh/app/data/app.db
+        region: ap-southeast-2
+        access-key-id: ${LITESTREAM_ACCESS_KEY_ID}
+        secret-access-key: ${LITESTREAM_SECRET_ACCESS_KEY}
+        endpoint: https://s3.ap-southeast-2.amazonaws.com
+
+`caddy_stack(..., litestream=...)` adds two services. A one-shot
+`litestream-restore` must finish before `app` starts, so a fresh server
+gets its db back before the app can create an empty one; the
+`litestream` replicate service starts after `app`:
+
+``` python
+c = caddy_stack('lh.example.com', fasthtml_app(vols=['/app/data']), vols=['/app/data'], root=d,
+                litestream=dict(dbs=['/app/data/app.db'], bucket='lh-backups', region='ap-southeast-2', prefix='lh',
+                                endpoint='https://s3.ap-southeast-2.amazonaws.com'))
+svcs = c.to_dict()['services']
+print(yaml.safe_dump({k: {o: v[o] for o in ('image', 'command', 'depends_on', 'restart') if o in v} for k,v in svcs.items()
+                      if k in ('app', 'litestream-restore', 'litestream')}, sort_keys=False))
+```
+
+    app:
+      depends_on:
+        litestream-restore:
+          condition: service_completed_successfully
+      restart: unless-stopped
+    litestream-restore:
+      image: litestream/litestream:0.5
+      command: restore -if-db-not-exists -if-replica-exists /app/data/app.db
+      restart: 'no'
+    litestream:
+      image: litestream/litestream:0.5
+      command: replicate
+      depends_on:
+      - app
+      restart: unless-stopped
 
 ## Install agent skill
 
@@ -339,7 +459,9 @@ mv_skill_md(dry_run=True)
 | [`Multipass`](https://vedicreader.github.io/vpseasy/core.html#multipass) | Launch / list / exec / delete local Ubuntu VMs |
 | `deploy_mp(name, src, path, build)` | Sync dir + `docker compose up` in Multipass VM |
 | [`Hetzner`](https://vedicreader.github.io/vpseasy/core.html#hetzner) | Create / list / delete Hetzner Cloud servers |
-| `hetzner_deploy(name, src, ...)` | Full pipeline: provision -\> wait -\> deploy (idempotent) |
+| [`Lightsail`](https://vedicreader.github.io/vpseasy/core.html#lightsail) | Create / list / delete AWS Lightsail instances; `bucket()` for backups (`pip install 'vpseasy[aws]'`) |
+| `vps_deploy(name, src, provider, ...)` | Full pipeline on any provider: provision -\> wait -\> deploy (idempotent) |
+| `hetzner_deploy(name, src, ...)` | [`vps_deploy`](https://vedicreader.github.io/vpseasy/core.html#vps_deploy) on Hetzner |
 | `wait_ssh(host, u, k, tout)` | Poll until SSH accepts connections |
 | `wait_ready(host, u, k, tout)` | Poll SSH then cloud-init until done |
 | `chk_cloud_init(host, u, k)` | Return `cloud-init status` string |
@@ -349,4 +471,7 @@ mv_skill_md(dry_run=True)
 | `deploy(host, src, path, ...)` | [`sync`](https://vedicreader.github.io/vpseasy/core.html#sync) + `docker compose up -d` |
 | `vols_to_binds(vols)` | `["/app/data"]` -\> `["./data:/app/data"]` for Compose bind mounts |
 | `caddy_stack(domain, df, ...)` | Compose file: app + caddy + cloudflared + web network + caddy volumes |
+| `litestream_conf(dbs, bucket, ...)` | Write a Litestream 0.5 config that streams and restores SQLite dbs |
+| `litestream_svc(vols, conf, env_file, cmd)` | Litestream service kwargs for `Compose.svc()` |
+| `cloud_init_sh(yaml)` | Shell-script equivalent of a [`vps_init()`](https://vedicreader.github.io/vpseasy/core.html#vps_init) cloud-config (Lightsail user data) |
 | `mv_skill_md(dry_run, dir)` | Install agent SKILL.md |
