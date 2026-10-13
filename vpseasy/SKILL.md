@@ -1,8 +1,8 @@
 ---
 name: vpseasy
 description: >
-  VPS lifecycle in Python: cloud-init generation, Hetzner provisioning,
-  Multipass local testing, SSH helpers, Docker Compose deployment.
+  VPS lifecycle in Python: cloud-init generation, Hetzner and AWS Lightsail provisioning,
+  Multipass local testing, SSH helpers, Docker Compose deployment, Litestream SQLite backups.
 ---
 
 # vpseasy
@@ -12,9 +12,21 @@ Provision VPSes, test locally with Multipass, deploy Docker Compose apps — all
 ## Setup
 
 ```sh
-pip install vpseasy
+pip install vpseasy              # Hetzner + Multipass
+pip install 'vpseasy[aws]'       # adds boto3 for Lightsail
 export HCLOUD_TOKEN=your_token   # required for Hetzner
+export AWS_PROFILE=your_profile  # Lightsail: any standard AWS credential source (SSO profile, env vars)
 ```
+
+## Providers
+
+All providers share `servers()`, `get(name)`, `server_ip(name)`, `create(name, cloud_init=...)` and `delete(name)`, so `vps_deploy(name, src, provider, **create_kw)` works with any of them.
+
+| Provider | Class | Credentials | `create_kw` |
+|----------|-------|-------------|-------------|
+| Hetzner Cloud | `Hetzner()` | `HCLOUD_TOKEN` | `image`, `server_type`, `location` |
+| AWS Lightsail | `Lightsail(region='ap-southeast-2')` | AWS chain (`AWS_PROFILE`) | `bundle` (`small_3_2`), `blueprint`, `zone`, `static_ip`, `ports`, `snapshots` |
+| Multipass (local) | `Multipass()` | none | use `deploy_mp`, not `vps_deploy` |
 
 ## Key functions
 
@@ -32,7 +44,10 @@ export HCLOUD_TOKEN=your_token   # required for Hetzner
 | `Hetzner().servers()` | `list[dict]` | List servers `[{name, ip, status}]` |
 | `Hetzner().delete(name)` | `None` | Delete server |
 | `Hetzner().key_names()` | `list[str]` | SSH key names registered in Hetzner (root access only) |
-| `hetzner_deploy(name, src, ...)` | `AttrDict(ip, name, key)` | Full pipeline: provision → wait → deploy (idempotent) |
+| `Lightsail().create(name, bundle, ...)` | `AttrDict(ip, name, key, resp)` | Provision Lightsail instance (idempotent, static IP, port 22 only, daily snapshots) |
+| `Lightsail().bucket(name)` | `AttrDict(bucket, region, endpoint, key_id, secret)` | Bucket (created if missing) + new access key for backups |
+| `vps_deploy(name, src, provider, ...)` | `AttrDict(ip, name, key)` | Full pipeline on any provider: provision → wait → deploy (idempotent) |
+| `hetzner_deploy(name, src, ...)` | `AttrDict(ip, name, key)` | `vps_deploy` on Hetzner |
 | `wait_ssh(host, u, k, tout)` | `True` | Poll until SSH is up |
 | `wait_ready(host, u, k, tout, retries)` | `True` | Poll SSH then cloud-init until done; retries on timeout |
 | `chk_cloud_init(host, u, k)` | `str` | `done\|running\|error\|unknown` |
@@ -42,6 +57,8 @@ export HCLOUD_TOKEN=your_token   # required for Hetzner
 | `deploy(host, src, path, user, build, key)` | `None` | `sync` + `docker compose up -d` |
 | `vols_to_binds(vols)` | `list[str]` | `["/app/data"]` -> `["./data:/app/data"]` for Compose bind mounts |
 | `caddy_stack(domain, df, vols, root, ...)` | `Compose` | app + caddy + cloudflared + web network; saves files if `root=` given |
+| `litestream_conf(dbs, bucket, endpoint, region, ...)` | `str` | Write Litestream 0.5 `litestream.yml` (restores missing dbs on start) |
+| `litestream_svc(vols, conf, env_file)` | `dict` | Litestream sidecar kwargs for `Compose.svc()` |
 | `mv_skill_md(dry_run, dir)` | `None` | Install SKILL.md to `.agents/` and `~/.claude/` |
 
 ## Common patterns
@@ -68,6 +85,24 @@ hz = Hetzner()                          # reads HCLOUD_TOKEN
 svr = hetzner_deploy('myapp-prod', './myapp', hz=hz, location='hel1')
 print(f'Deployed at {svr.ip}, key: {svr.key}')
 ```
+
+### Lightsail production deploy
+
+```python
+from vpseasy.core import *
+r = vps_deploy('myapp', './myapp', Lightsail(), bundle='small_3_2')   # Sydney by default
+```
+
+### SQLite backups with Litestream
+
+```python
+ls = Lightsail()
+b = ls.bucket('myapp-backups')          # put b.key_id / b.secret in .env as LITESTREAM_ACCESS_KEY_ID / LITESTREAM_SECRET_ACCESS_KEY
+caddy_stack('myapp.example.com', df, vols=['/app/data'], root=root,
+            litestream=dict(dbs=['/app/data/myapp.db'], bucket=b.bucket, endpoint=b.endpoint, region=b.region))
+```
+
+For Cloudflare R2 pass `endpoint='https://<account>.r2.cloudflarestorage.com'` and leave `region='auto'`.
 
 ### Lower-level Hetzner flow
 
@@ -134,4 +169,7 @@ mv_skill_md(dry_run=False)   # writes to .agents/skills/vpseasy/ and ~/.claude/s
 - `ssh_keys` on `Hetzner.create()` injects into the **root** user only — not the `deploy` user created by cloud-init. Passing both `ssh_keys` and `cloud_init` raises `ValueError`.
 - `cloud-init status` returns exit code 2 ("done with warnings") on Ubuntu 24.04 — `chk_cloud_init` uses `check=False` to handle this correctly.
 - SSH `StrictHostKeyChecking=accept-new` silently accepts new hosts but rejects changed host keys. `hetzner_deploy` runs `ssh-keygen -R <ip>` after provisioning to clear stale `known_hosts` entries when an IP is reused.
+- Lightsail does not apply `#cloud-config` user data as-is (live test 2026-10-13: the cloud-init `deploy` user was never created), so `vps_deploy(..., Lightsail())` currently times out in `wait_ready`. Wrapping the YAML in a bash launch script is the likely fix, still unverified.
+- Lightsail bundle ids change over time (`small_3_0` is gone; current ones end in `_3_2`). List them with `Lightsail()._c.get_bundles()`.
+- Litestream db paths must be absolute container paths inside one of the app's `vols`; `litestream_conf` raises `ValueError` otherwise. `app` gets `depends_on: [litestream]`, which orders container start but does not wait for the restore to finish.
 - Always use the private key path (no `.pub`) with `-i`. The public key is for `authorized_keys`, not for SSH client auth.

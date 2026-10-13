@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "vpseasy"
 dynamic = ["version"]
-description = "create resources, deploy code in prod and dev. supports hetzner and multipass"
+description = "create resources, deploy code in prod and dev. supports Hetzner, Lightsail and Multipass"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "Apache-2.0"}

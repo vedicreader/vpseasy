@@ -2,6 +2,12 @@
 
 <!-- do not remove -->
 
+## 0.0.19
+- `Lightsail` provider (AWS, boto3 via `pip install 'vpseasy[aws]'`): idempotent `create` with static IP, port 22 only and daily snapshots; `bucket()` returns a bucket and access key for backups
+- `vps_deploy(name, src, provider)`: provider-neutral provision → cloud-init → deploy; `hetzner_deploy` now wraps it, and `Hetzner.get(name)` was added
+- Litestream: `litestream_conf`, `litestream_svc`, and `caddy_stack(..., litestream=dict(...))` stream SQLite dbs to S3/Lightsail/R2 and restore them on a fresh server
+- Known issue: Lightsail does not apply `#cloud-config` user data as-is, so `vps_deploy` on Lightsail times out waiting for the `deploy` user
+
 ## 0.0.18
 rsync progress bar
 

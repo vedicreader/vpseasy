@@ -175,7 +175,7 @@ class Lightsail:
             if 'already' not in str(e).lower(): raise
         self._c.attach_static_ip(staticIpName=ip, instanceName=name)
 
-    def create(self, name, bundle='small_3_0', blueprint='ubuntu_24_04', zone=None, cloud_init=None,
+    def create(self, name, bundle='small_3_2', blueprint='ubuntu_24_04', zone=None, cloud_init=None,
                static_ip=True, ports=(22,), snapshots='16:00'):
         '''Create an instance (idempotent). cloud_init: YAML string or AttrDict(yaml, key) from vps_init().
         ports: public ports left open (default SSH only; traffic arrives via the Cloudflare tunnel).
