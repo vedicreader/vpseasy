@@ -73,7 +73,7 @@ def gen_key(slug, key_dir=None):
 def vps_init(hostname, pub_keys=None, username='deploy', docker=True, pkgs=None, cmds=None, **kw):
     'Cloud-init for a fresh VPS. pub_keys=None → auto-generates ed25519 key pair. Returns AttrDict(yaml, key).'
     kp = _mk_kp(hostname, pub_keys)
-    cmds = [c.format(username=username) for c in dock_cmd] if docker else [] + listify(cmds)
+    cmds = ([c.format(username=username) for c in dock_cmd] if docker else []) + listify(cmds)
     pkgs = ['curl', 'fail2ban', 'unattended-upgrades'] + listify(pkgs)
     yaml = cloud_init_config(hostname=hostname,username=username,pub_keys=kp.pub_str,packages=pkgs,cmds=cmds,**kw)
     return AttrDict(yaml=yaml, key=kp.key)
@@ -82,7 +82,7 @@ def vps_init(hostname, pub_keys=None, username='deploy', docker=True, pkgs=None,
 def multi_init(hostname, pub_keys=None, username='deploy', docker=True, pkgs=None, cmds=None):
     'Cloud-init for Multipass local VMs. pub_keys=None → auto-generates ed25519 key pair. Returns AttrDict(yaml, key).'
     kp = _mk_kp(hostname, pub_keys)
-    cmds = [c.format(username=username) for c in dock_cmd] if docker else [] + listify(cmds)
+    cmds = ([c.format(username=username) for c in dock_cmd] if docker else []) + listify(cmds)
     pkgs = ['curl'] + listify(pkgs)
     kw = {**runcmd(cmds), **reboot()} if cmds else {}
     yaml = cloud_init_base(hostname, packages=pkgs, users=[user(username, kp.pub_str)], **kw)
