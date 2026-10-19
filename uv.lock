@@ -4096,6 +4096,7 @@ dependencies = [
     { name = "fastcore" },
     { name = "hcloud" },
     { name = "pyyaml" },
+    { name = "truststore" },
 ]
 
 [package.optional-dependencies]
@@ -4123,6 +4124,7 @@ requires-dist = [
     { name = "fastcore", specifier = ">=1.12.31" },
     { name = "hcloud", specifier = ">=2.17.0" },
     { name = "pyyaml", specifier = ">=6.0.3" },
+    { name = "truststore", specifier = ">=0.9" },
 ]
 provides-extras = ["aws", "dev"]
 

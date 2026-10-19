@@ -537,13 +537,15 @@ def rollback(host, to=None, path='/srv/app', svc='app', img=None, user='deploy',
 
 # %% ../nbs/00_core.ipynb #54632f86
 def wait_http(url, ua='vpseasy', tries=40, poll=15, timeout=10) -> bool:
-    'Ask for `url` until it answers 200, up to `tries` times `poll` seconds apart, and return whether it did.'
-    import urllib.request, http.client
+    'Ask for `url` until it answers 200, up to `tries` times `poll` seconds apart, printing each new error, and return whether it did.'
+    import urllib.request, http.client, ssl, truststore
+    ctx, last = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT), None   # the system's trust store, so a root added there (a TLS-inspecting proxy) verifies
     for i in range(tries):
         try:
-            with urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': ua}), timeout=timeout) as r:
+            with urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': ua}), timeout=timeout, context=ctx) as r:
                 if r.status == 200: return True
-        except (OSError, http.client.HTTPException): pass
+        except (OSError, http.client.HTTPException) as e:
+            if str(e) != last: print(f'wait_http {url}: {e}'); last = str(e)
         if i < tries - 1: time.sleep(poll)
     return False
 
@@ -553,7 +555,7 @@ _HEALTH = ("free -m | awk '/^Mem/{print $2, $3} /^Swap/{print $2, $3}'; cut -d' 
 
 def server_health(host, user='deploy', key=None, name=None, port=22, key_pass=None, password=None) -> AttrDict:
     'Return memory and swap in MB, RAM use with swap in percent, the load averages, root disk use and each container from `host`.'
-    ls = run_ssh(host, _HEALTH, user=user, key=key, name=name, port=port, key_pass=key_pass, password=password).splitlines()
+    ls = _out(run_ssh(host, _HEALTH, user=user, key=key, name=name, port=port, key_pass=key_pass, password=password)).splitlines()
     (ram, used), (swap, sused) = (map(int, l.split()) for l in ls[:2])
     return AttrDict(ram=ram, used=used, swap=swap, swap_used=sused, pct=round(100 * (used + sused) / max(ram, 1)),
                     load=ls[2].strip(), disk=ls[3].strip(), containers=[l.strip() for l in ls[4:] if l.strip()])

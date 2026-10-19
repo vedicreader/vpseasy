@@ -2,6 +2,11 @@
 
 <!-- do not remove -->
 
+## 0.0.25
+- `wait_http` verifies HTTPS against the system trust store through `truststore`, so a root added there, such as a TLS-inspecting proxy's, no longer makes every request fail; it prints each new error instead of waiting in silence
+- `server_health` leaves ssh's own stderr, such as a first-connection warning, out of the disk and container lines
+- Needs truststore
+
 ## 0.0.24
 - `keep_image` and `rollback` read image IDs without ssh's own stderr, so a first-connection warning no longer breaks the match or the `docker tag` command
 - A `docker rmi` that fails, for a tag a stopped container still uses, no longer stops the deploy before `docker compose up`
