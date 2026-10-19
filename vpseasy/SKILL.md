@@ -54,13 +54,13 @@ All providers share `servers()`, `get(name)`, `server_ip(name)`, `create(name, c
 | `chk_docker(host, u, k)` | `bool` | Verify Docker daemon running |
 | `run_ssh(host, *cmds, user, key, capture)` | `str\|CompletedProcess` | Run commands over SSH |
 | `sync(host, src, path, user, key, include, exclude, port, check=True)` | `int` | Rsync local dir to remote; raises on failure unless `check=False`, then returns the exit code |
-| `sync_paths(host, paths, src, path, ..., last=None, dry_run=False)` | `list` | One rsync per path, `--delete` scoped to it; `last` pattern sent in a second pass; `host=None` copies to a local folder |
+| `sync_paths(host, paths, src, path, ..., last=None, dry_run=False)` | `list` | One rsync per path, `--delete` scoped to it; `last` pattern sent in a second pass; refuses a path naming the root (`.`, `''`, `/`); `host=None` copies to a local folder |
 | `rsync_cmds(paths, src, dest, ssh_e, ...)` | `list` | The commands `sync_paths` runs |
 | `ssh_cmd(host, user, key, port)`, `res_key(key, name)`, `askpass_env(pw)` | | The `ssh` command line, key lookup, and password-prompt context manager, for your own ssh or rsync |
-| `deploy(host, src, path, user, build, key, port, prune=True, keep=3)` | `None` | `sync` + `docker compose up -d`; keeps the replaced image for `rollback`, prunes dangling images after |
-| `keep_image(host, path, svc, img, keep)` | `str\|None` | Tag the running image `<ts>` and `prev`, keep the newest `keep` timestamps |
+| `deploy(host, src, path, user, build, key, port, prune=True, keep=3)` | `None` | `sync` + `docker compose up -d`; keeps the new and the replaced image for `rollback`, prunes dangling images after |
+| `keep_image(host, path, svc, img, keep, prev=None)` | `str\|None` | Tag the running image and `prev` with their build times, tag `prev`, keep the newest `keep` timestamps plus those two |
 | `kept_images(host, path, svc, img)` | `list[(tag, id)]` | Kept timestamped images, newest first |
-| `rollback(host, to=None, path, svc, img)` | `str` | Retag a kept image as latest (newest unlike the running one by default), tag the replaced one `undo`, restart the service |
+| `rollback(host, to=None, path, svc, img)` | `str` | Retag a kept image as latest (newest older than the running one by default), tag the replaced one `prev`, restart the service; `to='prev'` undoes |
 | `wait_http(url, ua, tries, poll)` | `bool` | Poll until the URL answers 200 |
 | `server_health(host, ...)` | `AttrDict` | RAM, swap, pct, load, disk, containers |
 | `vols_to_binds(vols)` | `list[str]` | `["/app/data"]` -> `["./data:/app/data"]` for Compose bind mounts |

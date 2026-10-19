@@ -2,6 +2,14 @@
 
 <!-- do not remove -->
 
+## 0.0.26
+- No build is orphaned by a rollback: `deploy` tags each new build with its build time after the build, and `keep_image` deletes timestamped tags only past the newest `keep` by build time, never the running image's or `prev`'s; two rollbacks in a row used to leave the newest build untagged, out of `undo`'s reach and deleted by the next prune
+- `prev` always names the image that ran before the current one: `deploy` sets it after a build that changed the image, `rollback` sets it to the image it replaces, and `rollback(host, 'prev')` undoes either; the `undo` tag is no longer written
+- `rollback` without `to` picks the newest kept image older than the running one, so repeated calls keep going back instead of alternating
+- `keep_image` takes `prev`, the image ID that ran before, and returns the running image's tag even when it was already kept; an image with two timestamps counts once toward `keep`, and a build sharing another's second takes the next free one
+- `deploy` tags the new build and sets `prev` even when the restart after the build fails
+- `sync_paths` and `rsync_cmds` raise `ValueError` for a path that names the deploy root, such as `.`, `''` or `/`, or resolves to it or leaves it through `..` or a symlink, whose `--delete` would reach the whole folder
+
 ## 0.0.25
 - `wait_http` verifies HTTPS against the system trust store through `truststore`, so a root added there, such as a TLS-inspecting proxy's, no longer makes every request fail; it prints each new error instead of waiting in silence
 - `server_health` leaves ssh's own stderr, such as a first-connection warning, out of the disk and container lines

@@ -12,8 +12,9 @@ __all__ = ['mp', 'dock_cmd', 'Multipass', 'deploy_mp', 'keygen', 'gen_key', 'swa
            'vols_to_binds', 'caddy_stack', 'litestream_conf', 'litestream_svc', 'mv_skill_md']
 
 # %% ../nbs/00_core.ipynb #8795cffa
-import getpass, json, os, re, shlex, subprocess, tempfile, time, yaml
+import getpass, json, os, posixpath, re, shlex, subprocess, tempfile, time, yaml
 from contextlib import contextmanager, suppress
+from datetime import datetime, timedelta
 from dockeasy import Cli, env_get, Compose, Caddyfile, caddy_svc, cloudflared_svc, fasthtml_app
 from fastcore.all import L, Path, run, listify, AttrDict, AttrDictDefault, delegates, modified_env, first
 from fastcloudinit.core import cloud_init_base, cloud_init_config, user, runcmd, reboot
@@ -344,6 +345,11 @@ def rsync_cmds(paths, src, dest, ssh_e=None, exclude=None, delete=True, mkpath=T
     base = ['rsync', '-azh', *(['--mkpath'] if mkpath else []), *(['--delete'] if delete else []), *(['--itemize-changes'] if itemize else []),
             *(['-e', ssh_e] if ssh_e else []), *(['--dry-run'] if dry_run else [])]
     for x in listify(exclude): base += ['--exclude', x]
+    for p in listify(paths):
+        q = posixpath.normpath(str(p).strip('/') or '.')
+        r, s = Path(src, q).resolve(), Path(src).resolve()
+        if q.split('/')[0] in ('.', '..') or r == s or not r.is_relative_to(s):
+            raise ValueError(f'{p!r} names the deploy root or leaves it, so --delete would reach the whole folder; name the paths inside it')
     sd = lambda p: [f'{str(src).rstrip("/")}/{p}', f'{str(dest).rstrip("/")}/{p}'] if str(p).endswith('/') or not Path(src, p).is_dir() else sd(f'{p}/')
     return [c for p in listify(paths) for c in ([base + ['--exclude', last] + sd(p)] if last else []) + [base + sd(p)]]
 
@@ -391,9 +397,12 @@ def deploy(host, src='.', path='/srv/app', user='deploy', build=True, key=None, 
     kw = dict(host=host, u=user, k=key, name=name, key_pass=key_pass, password=password, verbose=verbose, port=port)
     if not (chk_docker(**kw) and _chk_compose(path=path,**kw)): return
     sk = dict(user=user, key=key, name=name, port=port, key_pass=key_pass, password=password)
-    if build and keep: keep_image(host, path, svc, img, keep, **sk)
+    im = _img(path, svc, img)
+    if (old := _id(host, f'{im}:latest', **sk) if build and keep else None): _stamp(host, im, old, kept_images(host, path, svc, img, **sk), **sk)
     a = f'cd {path} && docker compose up -d --remove-orphans' + (' --build' if build else '')
-    r = run_ssh(host, a, verbose=verbose, **sk)
+    try: r = run_ssh(host, a, verbose=verbose, **sk)
+    finally:
+        if build and keep: keep_image(host, path, svc, img, keep, prev=old, **sk)   # a build whose restart failed still holds `latest`
     if verbose: print('docker compose ran' + (' with build' if build else ''), '→', r.strip())
     if prune:
         r = run_ssh(host, 'docker image prune -f | tail -1; docker builder prune -f | tail -1', **sk)
@@ -508,31 +517,40 @@ def kept_images(host, path='/srv/app', svc='app', img=None, **kw) -> list:
     out = _out(run_ssh(host, f"docker image ls {_img(path, svc, img)} --no-trunc --format '{{{{.Tag}}}} {{{{.ID}}}}' 2>/dev/null || true", **kw))
     return sorted((tuple(l.split()[:2]) for l in out.splitlines() if len(l.split()) > 1 and _TS.fullmatch(l.split()[0])), reverse=True)
 
-def keep_image(host, path='/srv/app', svc='app', img=None, keep=3, **kw):
-    'Tag the image `svc` runs with the time and as `prev`, delete the timestamped tags past the newest `keep`, and return the new tag.'
+def _stamp(host, img, iid, ks, **kw):
+    'The timestamp tag of image `iid` in `ks`, first tagging it with its build time, and adding it to `ks`, when it has none.'
+    if t := first(t for t, i in ks if i == iid): return t
+    t = re.sub(r'[-:]', '', _out(run_ssh(host, f"docker image inspect -f '{{{{.Created}}}}' {iid} 2>/dev/null || true", **kw)))[:15]
+    if not _TS.fullmatch(t): t = time.strftime('%Y%m%dT%H%M%S', time.gmtime())
+    while dict(ks).get(t, iid) != iid: t = re.sub(r'[-:]', '', (datetime.fromisoformat(t) + timedelta(seconds=1)).isoformat())   # another build has that second
+    run_ssh(host, f'docker tag {iid} {img}:{t}', **kw)
+    ks.append((t, iid)); ks.sort(reverse=True)
+    return t
+
+def keep_image(host, path='/srv/app', svc='app', img=None, keep=3, prev=None, **kw):
+    'Tag the image `svc` runs, and image `prev` when given, with their build times, tag `prev` as `prev`, delete the timestamped tags past the newest `keep` but those two, and return the running tag.'
     img = _img(path, svc, img)
     if not (cur := _id(host, f'{img}:latest', **kw)): return None
-    ks, tag = kept_images(host, path, svc, img, **kw), None
-    if not ks or ks[0][1] != cur:
-        tag = time.strftime('%Y%m%dT%H%M%S', time.gmtime())
-        run_ssh(host, f'docker tag {img}:latest {img}:{tag}', **kw)
-        ks.insert(0, (tag, cur))
-    run_ssh(host, f'docker tag {img}:latest {img}:prev', **kw)
-    if old := [t for t, _ in ks[keep:]]: run_ssh(host, 'docker rmi ' + ' '.join(f'{img}:{t}' for t in old) + ' || true', **kw)   # a tag a stopped container still uses stays
+    ks = kept_images(host, path, svc, img, **kw)
+    tag = _stamp(host, img, cur, ks, **kw)
+    if prev and prev != cur: _stamp(host, img, prev, ks, **kw); run_ssh(host, f'docker tag {prev} {img}:prev', **kw)
+    else: prev = _id(host, f'{img}:prev', **kw)
+    ids = list(dict.fromkeys(i for _, i in ks))[:keep] + [cur, prev]   # an image with two timestamps takes one place
+    if old := [t for t, i in ks if i not in ids]: run_ssh(host, 'docker rmi ' + ' '.join(f'{img}:{t}' for t in old) + ' || true', **kw)   # a tag a stopped container still uses stays
     return tag
 
 def rollback(host, to=None, path='/srv/app', svc='app', img=None, user='deploy', key=None, name=None, port=22,
              key_pass=None, password=None, verbose=True):
-    'Point `svc` at the kept image `to`, or the newest kept image unlike the running one, restart it, and return the tag.'
+    'Point `svc` at the kept image `to`, or the newest kept image older than the running one, tag the running one `prev`, restart `svc`, and return the tag.'
     key_pass, password = _resolve_cred(key_pass, password)
     kw = dict(user=user, key=key, name=name, port=port, key_pass=key_pass, password=password)
     img, ks = _img(path, svc, img), kept_images(host, path, svc, img, **kw)
-    cur = _id(host, f'{img}:latest', **kw)
-    if to is None and (to := first(t for t, i in ks if i != cur)) is None: raise ValueError(f'no kept image of {img} differs from the running one')
+    ct = _stamp(host, img, cur, ks, **kw) if (cur := _id(host, f'{img}:latest', **kw)) else None
+    if to is None and (to := first(t for t, i in ks if i != cur and (ct is None or t < ct))) is None: raise ValueError(f'no kept image of {img} is older than the running one')
     if not (tid := dict(ks).get(to) or _id(host, f'{img}:{to}', **kw)): raise ValueError(f'{img}:{to} is not on {host}; kept: {[t for t, _ in ks]}')
-    run_ssh(host, *([f'docker tag {img}:latest {img}:undo'] if cur else []), f'docker tag {tid} {img}:latest',
+    run_ssh(host, *([f'docker tag {cur} {img}:prev'] if cur and cur != tid else []), f'docker tag {tid} {img}:latest',
             f'cd {path} && docker compose up -d --no-build --force-recreate {svc}', **kw)
-    if verbose: print(f'{svc} runs {img}:{to}; {img}:undo is the image it replaced')
+    if verbose: print(f'{svc} runs {img}:{to}; {img}:prev is the image it replaced')
     return to
 
 # %% ../nbs/00_core.ipynb #54632f86
