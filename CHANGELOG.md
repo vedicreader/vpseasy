@@ -2,6 +2,9 @@
 
 <!-- do not remove -->
 
+## 0.0.21
+`Multipass.rm` passes no empty argument to `multipass delete`; `sync` takes `port` for its SSH and rsync connections
+
 ## 0.0.19
 lightsail provider, vps_deploy, litestream backups (`hetzner_deploy` args after `src` are keyword-only)
 
