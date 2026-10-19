@@ -344,7 +344,7 @@ def rsync_cmds(paths, src, dest, ssh_e=None, exclude=None, delete=True, mkpath=T
     base = ['rsync', '-azh', *(['--mkpath'] if mkpath else []), *(['--delete'] if delete else []), *(['--itemize-changes'] if itemize else []),
             *(['-e', ssh_e] if ssh_e else []), *(['--dry-run'] if dry_run else [])]
     for x in listify(exclude): base += ['--exclude', x]
-    sd = lambda p: [f'{str(src).rstrip("/")}/{p}', f'{str(dest).rstrip("/")}/{p}']
+    sd = lambda p: [f'{str(src).rstrip("/")}/{p}', f'{str(dest).rstrip("/")}/{p}'] if str(p).endswith('/') or not Path(src, p).is_dir() else sd(f'{p}/')
     return [c for p in listify(paths) for c in ([base + ['--exclude', last] + sd(p)] if last else []) + [base + sd(p)]]
 
 def sync_paths(host, paths, src='.', path='/srv/app', user='deploy', key=None, name=None, port=22, key_pass=None, password=None,
@@ -473,6 +473,7 @@ def vps_deploy(name, # server name, also the key file name under ~/.ssh when `ke
                prune=True, # delete dangling images and the build cache after the build
                keep=3, # timestamped images of the app kept for `rollback`; 0 keeps none
                svc='app', # the Compose service whose image is kept
+               img=None, # that image's name when the Compose project is not named after `path`
                **create_kw # passed to provider.create(), e.g. server_type= or bundle=
 ):
     'Create server `name` on `provider` if it does not exist, wait for its setup, deploy `src`, and return its ip, name and key.'
@@ -487,7 +488,7 @@ def vps_deploy(name, # server name, also the key file name under ~/.ssh when `ke
         if verbose: print(f'{name} provisioning at {ip} ...')
     wait_ready(ip, u=user, k=key, tout=tout, retries=retries, key_pass=key_pass, password=password, verbose=verbose, port=port)
     deploy(ip, src, user=user, path=path, build=build, key=key, include=include, exclude=exclude,
-           extra=extra, key_pass=key_pass, password=password, verbose=verbose, port=port, prune=prune, keep=keep, svc=svc)
+           extra=extra, key_pass=key_pass, password=password, verbose=verbose, port=port, prune=prune, keep=keep, svc=svc, img=img)
     return AttrDict(ip=ip, name=name, key=key)
 
 @delegates(vps_deploy, but=['provider'])
@@ -498,12 +499,13 @@ def hetzner_deploy(name, src, hz=None, image='ubuntu-24.04', server_type='cx23',
 # %% ../nbs/00_core.ipynb #f5d274c0
 _TS = re.compile(r'\d{8}T\d{6}')
 
-def _img(path, svc, img): return img or f"{re.sub(r'[^a-z0-9_-]', '', Path(path).name.lower())}-{svc}"
-def _id(host, ref, **kw): return run_ssh(host, f"docker image inspect -f '{{{{.Id}}}}' {ref} 2>/dev/null || true", **kw).strip()
+def _img(path, svc, img): return img or f"{re.sub(r'[^a-z0-9_-]', '', Path(path).resolve().name.lower()).lstrip('-_')}-{svc}"
+def _out(s): return s.split(' ;; ')[0].strip()   # run_ssh appends ssh's own stderr, such as a new host's warning
+def _id(host, ref, **kw): return _out(run_ssh(host, f"docker image inspect -f '{{{{.Id}}}}' {ref} 2>/dev/null || true", **kw))
 
 def kept_images(host, path='/srv/app', svc='app', img=None, **kw) -> list:
     'Return the timestamped images kept of `svc` on `host`, as (tag, image id) pairs, newest first.'
-    out = run_ssh(host, f"docker image ls {_img(path, svc, img)} --no-trunc --format '{{{{.Tag}}}} {{{{.ID}}}}' 2>/dev/null || true", **kw)
+    out = _out(run_ssh(host, f"docker image ls {_img(path, svc, img)} --no-trunc --format '{{{{.Tag}}}} {{{{.ID}}}}' 2>/dev/null || true", **kw))
     return sorted((tuple(l.split()[:2]) for l in out.splitlines() if len(l.split()) > 1 and _TS.fullmatch(l.split()[0])), reverse=True)
 
 def keep_image(host, path='/srv/app', svc='app', img=None, keep=3, **kw):
@@ -516,7 +518,7 @@ def keep_image(host, path='/srv/app', svc='app', img=None, keep=3, **kw):
         run_ssh(host, f'docker tag {img}:latest {img}:{tag}', **kw)
         ks.insert(0, (tag, cur))
     run_ssh(host, f'docker tag {img}:latest {img}:prev', **kw)
-    if old := [t for t, _ in ks[keep:]]: run_ssh(host, 'docker rmi ' + ' '.join(f'{img}:{t}' for t in old), **kw)
+    if old := [t for t, _ in ks[keep:]]: run_ssh(host, 'docker rmi ' + ' '.join(f'{img}:{t}' for t in old) + ' || true', **kw)   # a tag a stopped container still uses stays
     return tag
 
 def rollback(host, to=None, path='/srv/app', svc='app', img=None, user='deploy', key=None, name=None, port=22,
@@ -536,12 +538,12 @@ def rollback(host, to=None, path='/srv/app', svc='app', img=None, user='deploy',
 # %% ../nbs/00_core.ipynb #54632f86
 def wait_http(url, ua='vpseasy', tries=40, poll=15, timeout=10) -> bool:
     'Ask for `url` until it answers 200, up to `tries` times `poll` seconds apart, and return whether it did.'
-    import urllib.request
+    import urllib.request, http.client
     for i in range(tries):
         try:
             with urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': ua}), timeout=timeout) as r:
                 if r.status == 200: return True
-        except OSError: pass
+        except (OSError, http.client.HTTPException): pass
         if i < tries - 1: time.sleep(poll)
     return False
 

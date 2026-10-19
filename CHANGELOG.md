@@ -2,6 +2,13 @@
 
 <!-- do not remove -->
 
+## 0.0.24
+- `keep_image` and `rollback` read image IDs without ssh's own stderr, so a first-connection warning no longer breaks the match or the `docker tag` command
+- A `docker rmi` that fails, for a tag a stopped container still uses, no longer stops the deploy before `docker compose up`
+- The image name drops a leading `-` or `_` from the project, as Compose does, and resolves `path='.'`; `vps_deploy` takes `img`
+- `wait_http` keeps polling on a truncated or malformed HTTP response
+- `rsync_cmds` adds the trailing slash to a folder named without one, so a second run does not nest it inside its copy
+
 ## 0.0.23
 - `deploy` keeps the image it replaces, tagged with the UTC time and `prev`, keeping the newest `keep=3`; `rollback(host, to=None)` points the service at a kept image and restarts it, tagging the replaced one `undo`; `keep_image` and `kept_images` are the pieces
 - `deploy` prunes dangling images and the build cache after the build unless `prune=False`
