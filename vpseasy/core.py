@@ -326,7 +326,7 @@ def sync(host, src='.', path='/srv/app', user='deploy', key=None, name=None, inc
         cmd += ['--include', '*/', '--exclude', '*']
     cmd += [str(src).rstrip('/') + '/', f'{user}@{host}:{path}/']
     if verbose: print('Running rsync:', ' '.join(cmd))
-    with _askpass_env(key_pass or password): subprocess.run(cmd)
+    with _askpass_env(key_pass or password): subprocess.run(cmd, check=True)
     if verbose: print('Rsync completed successfully')
 
 def chk_docker(host, u='deploy', k=None, name=None, key_pass=None, password=None, verbose=False) -> bool:

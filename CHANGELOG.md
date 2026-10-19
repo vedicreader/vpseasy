@@ -2,6 +2,9 @@
 
 <!-- do not remove -->
 
+## 0.0.22
+`sync` raises `CalledProcessError` when rsync fails, so `deploy` stops before `docker compose up`
+
 ## 0.0.21
 `Multipass.rm` passes no empty argument to `multipass delete`; `sync` takes `port` for its SSH and rsync connections
 
