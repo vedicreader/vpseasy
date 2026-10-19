@@ -1,4 +1,4 @@
-"""VPS provisioning: cloud-init generation, Hetzner hcloud CLI wrapper, SSH deployment helpers
+"""Create servers on Hetzner or Lightsail, write their cloud-init files, and deploy to them over SSH.
 
 Docs: https://vedicreader.github.io/vpseasy/core.html.md"""
 
@@ -24,10 +24,10 @@ from hcloud.ssh_keys import SSHKey
 
 # %% ../nbs/00_core.ipynb #67f2b54ac2a375f9
 class Multipass(Cli):
-    'Wrap multipass CLI: manage local Ubuntu VMs for testing'
+    'Run the multipass command to manage local Ubuntu VMs for testing.'
     def _run(self, cmd, *args): return run('multipass', cmd, *args)
     def launch(self,name,image='24.04',cpus=1,memory='1G',disk='10G',cloud_init:AttrDict=None, mounts=None) -> AttrDict:
-        'Launch a VM. cloud_init: AttrDict(yaml, key) from multi_init() or vps_init(). Returns AttrDict(name, key).'
+        'Start VM `name` with the cloud-init file from `multi_init` or `vps_init`, and return its name and SSH key path.'
         args = ['multipass', 'launch', image, '-n', name, '-c', str(cpus), '-m', memory, '-d', disk]
         for hp, vp in (mounts or {}).items(): args += ['--mount', f'{hp}:{vp}']
         if cloud_init: args += ['--cloud-init', '-']
@@ -35,27 +35,27 @@ class Multipass(Cli):
         return AttrDict(name=name, key=cloud_init.key if cloud_init else None)
 
     def vms(self, running=False):
-        'List VM names. running=True filters to Running state.'
+        'List VM names, only the running ones if `running` is True.'
         lst = L(json.loads(self('list', '--format', 'json')).get('list', []))
         if running: lst = lst.filter(lambda v: v.get('state') == 'Running')
         return list(lst.itemgot('name'))
 
     def ip(self, name) -> str:
-        'Get IPv4 address of a VM.'
+        'Return the IPv4 address of VM `name`.'
         return json.loads(self('info', name, '--format', 'json'))['info'][name]['ipv4'][0]
 
     def exec_(self, name, *cmd) -> str:
-        'Run a command in a VM.'
+        'Run a command inside VM `name` and return its output.'
         return self('exec', name, '--', *cmd)
 
     def rm(self, name, purge=True) -> None:
-        'Delete a VM.'
+        'Delete VM `name`; with `purge` it cannot be recovered.'
         self('delete', '--purge' if purge else '', name)
 
 mp = Multipass()
 
 def deploy_mp(name, src, path='/srv/app', key=None, build=True, verbose=True) -> None:
-    'Sync local directory into a Multipass VM and run docker compose up -d.'
+    'Copy `src` into Multipass VM `name` and start it with docker compose.'
     mp.exec_(name, 'sudo', 'install', '-d', '-o', 'deploy', '-g', 'deploy', path)
     deploy(mp.ip(name), src, path, key=key, name=name, build=build, verbose=verbose)
 
@@ -64,14 +64,14 @@ dock_cmd = ['curl -fsSL https://get.docker.com | sh', 'usermod -aG docker {usern
 def keygen(path): return ['ssh-keygen', '-t', 'ed25519', '-f', str(path), '-N', '', '-q']
 def _mk_kp(h,pub): return AttrDictDefault(pub_str=listify(pub)) if pub else gen_key(h)
 def gen_key(slug, key_dir=None):
-    'Generate ed25519 key pair at <key_dir>/<slug>. Overwrites existing. Returns AttrDict(key, pub, pub_str).'
+    'Make an ed25519 key pair at `<key_dir>/<slug>`, replacing any existing one, and return its paths and public key text.'
     d = Path(key_dir or Path.home()/'.ssh')
     priv, pub = d/slug, d/f'{slug}.pub'
     subprocess.run(keygen(priv), input='y\n', text=True, capture_output=True, check=True)
     return AttrDict(key=priv, pub=pub, pub_str=[pub.read_text().strip()])
 
 def vps_init(hostname, pub_keys=None, username='deploy', docker=True, pkgs=None, cmds=None, **kw):
-    'Cloud-init for a fresh VPS. pub_keys=None → auto-generates ed25519 key pair. Returns AttrDict(yaml, key).'
+    'Write a cloud-init file for a public server, generating a key pair if `pub_keys` is None.'
     kp = _mk_kp(hostname, pub_keys)
     cmds = ([c.format(username=username) for c in dock_cmd] if docker else []) + listify(cmds)
     pkgs = ['curl', 'fail2ban', 'unattended-upgrades'] + listify(pkgs)
@@ -80,7 +80,7 @@ def vps_init(hostname, pub_keys=None, username='deploy', docker=True, pkgs=None,
 
 # %% ../nbs/00_core.ipynb #bqtzq0gu82l
 def multi_init(hostname, pub_keys=None, username='deploy', docker=True, pkgs=None, cmds=None):
-    'Cloud-init for Multipass local VMs. pub_keys=None → auto-generates ed25519 key pair. Returns AttrDict(yaml, key).'
+    'Write a cloud-init file for a local Multipass VM, generating a key pair if `pub_keys` is None.'
     kp = _mk_kp(hostname, pub_keys)
     cmds = ([c.format(username=username) for c in dock_cmd] if docker else []) + listify(cmds)
     pkgs = ['curl'] + listify(pkgs)
@@ -90,30 +90,28 @@ def multi_init(hostname, pub_keys=None, username='deploy', docker=True, pkgs=Non
 
 # %% ../nbs/00_core.ipynb #a2e72839
 class Hetzner:
-    'Hetzner Cloud VPS provider via hcloud Python SDK. Token read from HCLOUD_TOKEN by default.'
+    'Create, list and delete Hetzner Cloud servers, using the token in `HCLOUD_TOKEN` by default.'
     def __init__(self, token=None):
         token = token or env_get('HCLOUD_TOKEN')
         if not token: raise ValueError('HCLOUD_TOKEN environment variable not set')
         self._c = Client(token=token)
 
     def servers(self) -> list:
-        'List servers as [{name, ip, status}]'
+        'List servers as dicts with name, ip and status.'
         return L(self._c.servers.get_all()).map(lambda s: dict(name=s.name, ip=s.public_net.ipv4.ip, status=s.status))
 
     def server_ip(self, name) -> str:
-        'Get public IPv4 of a server by name'
+        'Return the public IPv4 address of server `name`, raising ValueError if it does not exist.'
         s = self._c.servers.get_by_name(name)
         if not s: raise ValueError(f'Server {name!r} not found')
         return s.public_net.ipv4.ip
 
     def get(self, name):
-        'Server by name, or None'
+        'Return the hcloud server called `name`, or None.'
         return self._c.servers.get_by_name(name)
 
     def create(self, name, image='ubuntu-24.04', server_type='cx23', location=None, cloud_init=None, ssh_keys=None, key=None):
-        '''Create a server. cloud_init: YAML string or AttrDict(yaml, key) from vps_init(). Returns AttrDict(ip, name, key, resp).
-        NOTE: ssh_keys are Hetzner-registered keys injected into the root user only — they do NOT grant access to the
-        deploy user created by cloud_init. Pass ssh_keys only when cloud_init is None (root-only access).'''
+        'Create server `name` from a cloud-init file or `vps_init` result, and return its ip, name, key and SDK response.'
         if cloud_init is not None and ssh_keys:
             raise ValueError(
                 'ssh_keys and cloud_init are conflicting strategies: ssh_keys grants root access only, '
@@ -127,16 +125,16 @@ class Hetzner:
         return AttrDict(ip=resp.server.public_net.ipv4.ip, name=name, key=key, resp=resp)
 
     def delete(self, name) -> None:
-        'Delete a server by name'
+        'Delete server `name` if it exists.'
         s = self._c.servers.get_by_name(name)
         if s: s.delete()
 
     def keys(self) -> list:
-        'List SSH keys as [{name, fingerprint}]'
+        'List the SSH keys stored in your Hetzner account as dicts with name and fingerprint.'
         return L(self._c.ssh_keys.get_all()).map(lambda k: dict(name=k.name, fingerprint=k.fingerprint))
 
     def key_names(self) -> list:
-        'Return SSH key name strings for use in create(ssh_keys=[...]) — root access only, not for deploy user'
+        'Return the names of your stored Hetzner SSH keys, for `create(ssh_keys=...)`.'
         return [k['name'] for k in self.keys()]
 
 # %% ../nbs/00_core.ipynb #cish01
@@ -146,14 +144,13 @@ _user_keys = {'name', 'groups', 'shell', 'sudo', 'ssh_authorized_keys'}
 def _heredoc(path, content, eof='VPSEASY_EOF'): return f"cat > {shlex.quote(str(path))} <<'{eof}'\n{content.rstrip(chr(10))}\n{eof}"
 
 def _perms(m):
-    'cloud-init file mode (int or octal string) → validated octal string'
+    'Turn a cloud-init file mode, int or octal string, into a checked octal string.'
     m = format(m, 'o') if isinstance(m, int) else str(m)
     if not re.fullmatch(r'[0-7]{3,4}', m): raise ValueError(f'invalid write_files permissions {m!r}')
     return m
 
 def cloud_init_sh(cloud_init):
-    '''POSIX shell equivalent of a vps_init() cloud-config, for providers that run user data as a script (Lightsail).
-    Skips power_state (no reboot), preserve_hostname and disable_root (root login is already off on Ubuntu images).'''
+    'Convert a `vps_init` cloud-config into a bash script, for providers such as Lightsail that run user data as a script.'
     c = yaml.safe_load(cloud_init) or {}
     if bad := set(c) - _ci_keys - _ci_skip: raise ValueError(f'cloud_init_sh does not support cloud-config keys {sorted(bad)}')
     q = shlex.quote
@@ -191,7 +188,7 @@ def cloud_init_sh(cloud_init):
 class _Secret(str): __repr__ = lambda self: "'***'"
 
 class Lightsail:
-    'AWS Lightsail VPS provider via boto3. Credentials from the AWS chain (e.g. AWS_PROFILE from SSO).'
+    'Create, list and delete AWS Lightsail instances through boto3, using the standard AWS credentials.'
     def __init__(self, region='ap-southeast-2', profile=None):
         try: import boto3
         except ImportError as e: raise ImportError("Lightsail needs boto3: pip install 'vpseasy[aws]'") from e
@@ -199,17 +196,17 @@ class Lightsail:
         self._c = boto3.Session(profile_name=profile, region_name=region).client('lightsail')
 
     def servers(self) -> list:
-        'List instances as [{name, ip, status}]'
+        'List instances as dicts with name, ip and status.'
         pages = self._c.get_paginator('get_instances').paginate()
         return [dict(name=i['name'], ip=i.get('publicIpAddress'), status=i['state']['name']) for p in pages for i in p['instances']]
 
     def get(self, name):
-        'Instance dict by name, or None'
+        'Return the instance dict for `name`, or None.'
         try: return self._c.get_instance(instanceName=name)['instance']
         except self._c.exceptions.NotFoundException: return None
 
     def server_ip(self, name, tout=300, interval=5) -> str:
-        'Public IPv4 of an instance, waiting until it is running'
+        'Wait until instance `name` is running and return its public IPv4 address.'
         dl = time.time() + tout
         while time.time() < dl:
             i = self.get(name)
@@ -228,10 +225,7 @@ class Lightsail:
 
     def create(self, name, bundle='small_3_2', blueprint='ubuntu_24_04', zone=None, cloud_init=None,
                static_ip=True, ports=(22,), snapshots='16:00'):
-        '''Create an instance (idempotent). cloud_init: YAML string or AttrDict(yaml, key) from vps_init();
-        cloud-config is converted with cloud_init_sh() because Lightsail runs user data as a shell script.
-        ports: public ports left open (default SSH only; traffic arrives via the Cloudflare tunnel).
-        snapshots: daily automatic snapshot time HH:00 UTC, or None. Returns AttrDict(ip, name, key, resp).'''
+        'Create instance `name` unless it exists, set its static IP, open ports and daily snapshot, and return its ip, name, key and response.'
         key = None
         if isinstance(cloud_init, AttrDict): key, cloud_init = cloud_init.key, cloud_init.yaml
         if cloud_init and cloud_init.lstrip().startswith('#cloud-config'): cloud_init = cloud_init_sh(cloud_init)
@@ -250,14 +244,13 @@ class Lightsail:
         return AttrDict(ip=ip, name=name, key=key, resp=resp)
 
     def delete(self, name, release_ip=True) -> None:
-        'Delete an instance (and its static IP)'
+        'Delete instance `name` and, if `release_ip`, its static IP.'
         if self.get(name): self._c.delete_instance(instanceName=name, forceDeleteAddOns=True)
         if release_ip:
             with suppress(self._c.exceptions.NotFoundException): self._c.release_static_ip(staticIpName=f'{name}-ip')
 
     def bucket(self, name, bundle='small_1_0'):
-        '''Create the bucket if missing and a new access key (Lightsail allows two per bucket, so a third call fails until one
-        is deleted). Returns AttrDict(bucket, region, endpoint, key_id, secret); the secret is only available now.'''
+        'Create bucket `name` if missing and return a new access key for it, whose secret is shown only this once.'
         try: self._c.get_buckets(bucketName=name)
         except self._c.exceptions.NotFoundException: self._c.create_bucket(bucketName=name, bundleId=bundle)
         k = self._c.create_bucket_access_key(bucketName=name)['accessKey']
@@ -272,7 +265,7 @@ def _ssh(host, user, key, port):
     return a + [f'{user}@{host}']
 
 def _res_key(key=None, name=None):
-    'Resolve SSH key: explicit path > name slug (~/.ssh/<name>) > None. Raise if file with slug missing.'
+    'Pick the SSH key: `key` if given, else `~/.ssh/<name>`, which must exist, else None.'
     if key: return str(key)
     if not name: return None
     p = Path.home()/'.ssh'/name
@@ -302,7 +295,7 @@ def _askpass_env(pw):
 
 def run_ssh(host, *cmds, user='deploy', key=None, name=None, port=22, key_pass=None, password=None, check=True,
             verbose=False, stdin_data=None):
-    'Run commands on remote host via SSH. key_pass= for key passphrase, password= for server password auth. Pass True to either to prompt. stdin_data= bytes piped to remote stdin (e.g. for sudo -S).'
+    'Run `cmds` on `host` over SSH, joined with `&&`, and return the output.'
     key_pass, password = _resolve_cred(key_pass, password)
     ssh_cmd = _ssh(host, user, _res_key(key, name), port) + [' && '.join(cmds)]
     with _askpass_env(key_pass or password): res = subprocess.run(ssh_cmd, input=stdin_data, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -315,8 +308,7 @@ def run_ssh(host, *cmds, user='deploy', key=None, name=None, port=22, key_pass=N
 
 def sync(host, src='.', path='/srv/app', user='deploy', key=None, name=None, include=None, exclude=None,
          extra=None, key_pass=None, password=None, verbose=False):
-    '''Rsync local src to remote host:path. include= whitelist patterns, exclude= blacklist patterns.
-     extra= extra rsync flags e.g. "--checksum" or ["--ignore-times","--partial"].'''
+    'Copy local directory `src` to `path` on `host` with rsync, deleting remote files that are not in `src`.'
     key_pass, password = _resolve_cred(key_pass, password)
     inner = f'mkdir -p {path} && chown {user}:{user} {path}'
     a = f'[ -d {path} -a -w {path} ] || sudo {'-S' if password else ''} sh -c {shlex.quote(inner)}'
@@ -338,7 +330,7 @@ def sync(host, src='.', path='/srv/app', user='deploy', key=None, name=None, inc
     if verbose: print('Rsync completed successfully')
 
 def chk_docker(host, u='deploy', k=None, name=None, key_pass=None, password=None, verbose=False) -> bool:
-	'Verify docker daemon is running and user can run containers.'
+	'Return True if Docker is running on `host` and `u` can use it.'
 	try:
 		key_pass, password = _resolve_cred(key_pass, password)
 		r = run_ssh(host, 'docker info', user=u, key=k, name=name, key_pass=key_pass, password=password)
@@ -349,7 +341,7 @@ def chk_docker(host, u='deploy', k=None, name=None, key_pass=None, password=None
 		return False
 
 def _chk_compose(host, path, f='docker-compose.yml', u='deploy', k=None, name=None, key_pass=None, password=None, verbose=False) -> bool:
-	'Check if Dockerfile exists in the remote path.'
+	'Return True if the Compose file `f` exists in `path` on `host`.'
 	try:
 		key_pass, password = _resolve_cred(key_pass, password)
 		r = run_ssh(host, f'ls {path}/{f}', user=u, key=k, name=name, key_pass=key_pass, password=password)
@@ -361,7 +353,7 @@ def _chk_compose(host, path, f='docker-compose.yml', u='deploy', k=None, name=No
 
 def deploy(host, src='.', path='/srv/app', user='deploy', build=True, key=None, name=None,
            include=None, exclude=None, extra=None, key_pass=None, password=None, verbose=False):
-    'Sync src to host via rsync then docker compose up if docker is available. extra= extra rsync flags forwarded to sync().'
+    'Copy `src` to `path` on `host`, then run docker compose up there if Docker and a Compose file are present.'
     key_pass, password = _resolve_cred(key_pass, password)
     sync(host, src, path, user, key=key, name=name, include=include, exclude=exclude,
          extra=extra, key_pass=key_pass, password=password, verbose=verbose)
@@ -373,7 +365,7 @@ def deploy(host, src='.', path='/srv/app', user='deploy', build=True, key=None, 
 
 # %% ../nbs/00_core.ipynb #q4e3dvg4au
 def wait_ssh(host, u='deploy', k=None, name=None, p=22, tout=300, interval=5, key_pass=None, password=None, verbose=True):
-    'Poll SSH until connection succeeds or raises TimeoutError.'
+    'Retry an SSH connection to `host` until it works, raising TimeoutError after `tout` seconds.'
     dl = time.time() + tout
     key_pass, password = _resolve_cred(key_pass, password)
     while time.time() < dl:
@@ -387,7 +379,7 @@ def wait_ssh(host, u='deploy', k=None, name=None, p=22, tout=300, interval=5, ke
     raise TimeoutError(f'SSH to {host} not ready after {tout}s')
 
 def chk_cloud_init(host, u='deploy', k=None, name=None, key_pass=None, password=None, verbose=True) -> str:
-    'Return cloud-init status: done|running|error|unknown. Uses the cloud_init_sh() marker in /var/lib/vpseasy when present. check=False handles exit code 2 (done-with-warnings) on Ubuntu 24.04.'
+    'Return `done`, `running` or `error` for the setup of `host`, read from the cloud-init or `cloud_init_sh` marker files.'
     c = ("if [ -f /var/lib/vpseasy/error ]; then echo 'status: error'; "
          "elif [ -d /var/lib/vpseasy ]; then { test -f /var/lib/vpseasy/ready && echo 'status: done' || echo 'status: running'; }; "
          "else { test -f /var/lib/cloud/instance/boot-finished && echo 'status: done' || echo 'status: running'; }; fi")
@@ -409,8 +401,7 @@ def wait_ready(host,
                password=None,
                verbose=False
 ):
-    '''Wait for SSH then poll cloud-init until done. Retries cloud-init polling up to `retries`
-    times before raising TimeoutError.'''
+    'Wait until SSH answers on `host`, then until cloud-init reports done, giving slow setups `retries` extra rounds.'
     key_pass, password = _resolve_cred(key_pass, password)
     wait_ssh(host,u=u,k=k,name=name,tout=tout,interval=interval,key_pass=key_pass,password=password,verbose=verbose)
     for a in range(retries + 1):
@@ -425,7 +416,7 @@ def wait_ready(host,
     raise TimeoutError(f'cloud-init on {host} not done after {tout * (retries + 1)}s ({retries + 1} attempts)')
 
 # %% ../nbs/00_core.ipynb #2bf3f571
-def vps_deploy(name, # server name (also used for SSH key slug if key not given)
+def vps_deploy(name, # server name, also the key file name under ~/.ssh when `key` is not given
                src,  # local path to sync and deploy
                provider, # Hetzner(), Lightsail() or anything with get, server_ip and create
                user='deploy', # remote username to deploy with (must match cloud-init user)
@@ -437,12 +428,12 @@ def vps_deploy(name, # server name (also used for SSH key slug if key not given)
                extra=None, # extra rsync flags forwarded to sync() e.g. '--checksum' or ['--ignore-times','--partial']
                key_pass=None, # passphrase for the SSH key, if it's encrypted
                password=None, # server password for SSH auth (alternative to key-based auth)
-               tout=600, # seconds to wait for SSH and cloud-init each before retrying (default 10 minutes)
-               retries=2, # cloud-init retries before giving up and raising TimeoutError
+               tout=600, # seconds to wait for SSH, and for each round of cloud-init polling
+               retries=2, # extra rounds of cloud-init polling before raising TimeoutError
                verbose=True, # whether to print verbose logs during wait and deploy steps
                **create_kw # passed to provider.create(), e.g. server_type= or bundle=
 ):
-    'Provision on any provider (idempotent) → wait for cloud-init → deploy. Returns AttrDict(ip, name, key).'
+    'Create server `name` on `provider` if it does not exist, wait for its setup, deploy `src`, and return its ip, name and key.'
     key_pass, password = _resolve_cred(key_pass, password)
     if provider.get(name):
         ip, key = provider.server_ip(name), _res_key(key=key, name=name)
@@ -459,25 +450,22 @@ def vps_deploy(name, # server name (also used for SSH key slug if key not given)
 
 @delegates(vps_deploy, but=['provider'])
 def hetzner_deploy(name, src, hz=None, image='ubuntu-24.04', server_type='cx23', location=None, **kwargs):
-    'vps_deploy on Hetzner. Kept for existing callers.'
+    'Run `vps_deploy` on Hetzner, with `hz` or a new `Hetzner()` client.'
     return vps_deploy(name, src, hz or Hetzner(), image=image, server_type=server_type, location=location, **kwargs)
 
 # %% ../nbs/00_core.ipynb #0929rkcanuri
 def load_pub_keys(paths=None) -> list:
-    'Load SSH public key strings. paths=None → auto-detect from ~/.ssh/id_*.pub'
+    'Return the text of each SSH public key file in `paths`, or of every `~/.ssh/id_*.pub` if `paths` is None.'
     paths = paths or list(Path.home().glob('.ssh/id_*.pub'))
     return [Path(p).read_text().strip() for p in listify(paths) if Path(p).exists()]
 
 # %% ../nbs/00_core.ipynb #c46800d1
 def vols_to_binds(vols):
-    'Convert ["/app/data"] → ["./data:/app/data"] for docker compose bind mounts'
+    'Turn container paths such as `/app/data` into Compose bind mounts such as `./data:/app/data`.'
     return [f'./{v.split("/")[-1]}:{v}' for v in listify(vols)]
 
 def caddy_stack(domain, df, vols=None, env_file='.env', cloudflared=True, root=None, conf=None, litestream=None, **kw):
-    '''Compose with app + caddy + optional cloudflared and litestream, web network, caddy volumes.
-    df: Dockerfile instance. root: if given, saves Dockerfile + docker-compose.yml there.
-    litestream: dict(dbs, bucket, endpoint, region, prefix) streams the app's sqlite dbs to a bucket; a one-shot
-    litestream-restore service restores missing dbs before app starts. **kw passed to caddy_svc.'''
+    'Build a Compose file with the app, Caddy, and optionally cloudflared and Litestream, saving it with its Dockerfile and Caddyfile in `root`.'
     root = Path(root if root else '.')
     df.save(Path(root)/'Dockerfile')
     v,env = vols_to_binds(vols) if vols else None, listify(env_file) if env_file else None
@@ -500,12 +488,12 @@ def caddy_stack(domain, df, vols=None, env_file='.env', cloudflared=True, root=N
 
 # %% ../nbs/00_core.ipynb #liteimpl
 def _under(p, vols):
-    'True if container path p is inside one of vols'
+    'True if container path `p` is inside one of `vols`.'
     return any(Path(p) != Path(v) and Path(p).is_relative_to(v) for v in listify(vols))
 
 def litestream_conf(dbs, bucket, endpoint=None, region='auto', prefix=None, conf='litestream.yml', retention='72h',
                     snapshot='24h', vols=None):
-    'Write a Litestream 0.5 config replicating each sqlite db to an S3-compatible bucket under prefix/<db path>.'
+    'Write a Litestream 0.5 config that copies each SQLite database to `<prefix>/<db path>` in an S3-compatible bucket, and return its text.'
     dbs = listify(dbs)
     for p in dbs:
         if not str(p).startswith('/'): raise ValueError(f'Litestream needs absolute db paths inside the container, got {p!r}')
@@ -523,14 +511,14 @@ def _restore_name(p, n): return 'litestream-restore' if n == 1 else 'litestream-
 
 def litestream_svc(vols='/app/data', conf='litestream.yml', env_file='.env', image='litestream/litestream:0.5', cmd='replicate',
                    restart='unless-stopped', **kw):
-    'Litestream service kwargs for Compose.svc(): mounts the app volumes holding the dbs and the config.'
+    'Return `Compose.svc()` arguments for a Litestream container that mounts the app volumes and the config.'
     if env_file: kw['env_file'] = listify(env_file)
     return dict(image=image, command=cmd, restart=restart,
                 volumes=vols_to_binds(vols) + [f'./{Path(conf).name}:/etc/litestream.yml'], **kw)
 
 # %% ../nbs/00_core.ipynb #37f0a632
 def mv_skill_md(dry_run=True, dir=None) -> None:
-    'Copy bundled SKILL.md to .agents/skills/vpseasy/ and ~/.claude/skills/vpseasy/'
+    'Copy the bundled SKILL.md to `.agents/skills/vpseasy/` and `~/.claude/skills/vpseasy/`, or only print the targets if `dry_run`.'
     base = Path(__file__).parent if '__file__' in globals() else Path.cwd()
     src = base/'SKILL.md'
     if not src.exists(): return
