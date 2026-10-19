@@ -50,7 +50,7 @@ class Multipass(Cli):
 
     def rm(self, name, purge=True) -> None:
         'Delete VM `name`; with `purge` it cannot be recovered.'
-        self('delete', '--purge' if purge else '', name)
+        self('delete', name, purge=purge)
 
 mp = Multipass()
 
@@ -307,17 +307,17 @@ def run_ssh(host, *cmds, user='deploy', key=None, name=None, port=22, key_pass=N
 
 
 def sync(host, src='.', path='/srv/app', user='deploy', key=None, name=None, include=None, exclude=None,
-         extra=None, key_pass=None, password=None, verbose=False):
+         extra=None, key_pass=None, password=None, port=22, verbose=False):
     'Copy local directory `src` to `path` on `host` with rsync, deleting remote files that are not in `src`.'
     key_pass, password = _resolve_cred(key_pass, password)
     inner = f'mkdir -p {path} && chown {user}:{user} {path}'
     a = f'[ -d {path} -a -w {path} ] || sudo {'-S' if password else ''} sh -c {shlex.quote(inner)}'
     stdin_data = (password + chr(10)).encode() if password else None
-    kw = dict(user=user, key=key, name=name, key_pass=key_pass, stdin_data=stdin_data,
+    kw = dict(user=user, key=key, name=name, port=port, key_pass=key_pass, stdin_data=stdin_data,
               verbose=verbose, password=password)
     run_ssh(host, a, **kw)
     if verbose: print(f'Ensured remote path {path} exists and is writable by {user}')
-    ssh_e = ' '.join(_ssh(host, user, _res_key(key, name), 22)[:-1])
+    ssh_e = ' '.join(_ssh(host, user, _res_key(key, name), port)[:-1])
     inc, exc = listify(include), listify(exclude)
     cmd = ['rsync', '-azh' + ('m' if inc else ''), '--info=progress2','--delete', '-e', ssh_e, *listify(extra)]
     for p in exc: cmd += ['--exclude', p]
