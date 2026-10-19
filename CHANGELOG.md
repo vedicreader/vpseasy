@@ -2,6 +2,18 @@
 
 <!-- do not remove -->
 
+## 0.0.23
+- `deploy` keeps the image it replaces, tagged with the UTC time and `prev`, keeping the newest `keep=3`; `rollback(host, to=None)` points the service at a kept image and restarts it, tagging the replaced one `undo`; `keep_image` and `kept_images` are the pieces
+- `deploy` prunes dangling images and the build cache after the build unless `prune=False`
+- `deploy`, `chk_docker`, `chk_cloud_init`, `wait_ready` and `vps_deploy` take `port`, like `sync`
+- `sync` returns rsync's exit code and takes `check=False` to return it instead of raising
+- `sync_paths` copies chosen paths with one rsync each, so `--delete` stays inside each path, with an optional second pass for a `last` pattern, `dry_run`, and a local folder when `host` is None; `rsync_cmds` returns its commands
+- `ssh_cmd`, `res_key` and `askpass_env` are public; `_ssh`, `_res_key` and `_askpass_env` remain as aliases
+- `caddy_stack` takes `app_kw`, `caddy_kw` and `cloudflared_kw` for per-service settings, whose `volumes` are appended, plus `caddyfile` and `write_caddyfile`; without `conf` it mounts `./Caddyfile` wherever `root` is
+- `vps_init` adds a 4 GB swap file and sets swappiness to 10 (`swap=None` skips it); `swap_cmds` returns those commands
+- `wait_http` polls a URL until it answers 200; `server_health` reports memory, swap, load, disk and containers
+- Needs dockeasy 0.0.9
+
 ## 0.0.22
 `sync` raises `CalledProcessError` when rsync fails, so `deploy` stops before `docker compose up`
 

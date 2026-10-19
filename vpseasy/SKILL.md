@@ -35,7 +35,7 @@ All providers share `servers()`, `get(name)`, `server_ip(name)`, `create(name, c
 | `load_pub_keys(paths=None)` | `list[str]` | Read pub keys from `~/.ssh/id_*.pub` |
 | `gen_key(slug, key_dir=None)` | `AttrDict(key, pub, pub_str)` | Generate ed25519 key pair |
 | `multi_init(hostname, pub_keys=None, ...)` | `AttrDict(yaml, key)` | Cloud-init for Multipass (no UFW) |
-| `vps_init(hostname, pub_keys=None, ...)` | `AttrDict(yaml, key)` | Cloud-init for prod VPS (UFW, fail2ban, Docker) |
+| `vps_init(hostname, pub_keys=None, swap='4G', swappiness=10, ...)` | `AttrDict(yaml, key)` | Cloud-init for prod VPS (UFW, fail2ban, Docker, swap file; `swap=None` skips swap) |
 | `Multipass().launch(name, image, ...)` | `AttrDict(name, key)` | Spin up a local Ubuntu VM |
 | `Multipass().ip(name)` | `str` | Get VM IPv4 |
 | `Multipass().rm(name)` | `None` | Delete + purge VM |
@@ -53,10 +53,18 @@ All providers share `servers()`, `get(name)`, `server_ip(name)`, `create(name, c
 | `chk_cloud_init(host, u, k)` | `str` | `done\|running\|error\|unknown` |
 | `chk_docker(host, u, k)` | `bool` | Verify Docker daemon running |
 | `run_ssh(host, *cmds, user, key, capture)` | `str\|CompletedProcess` | Run commands over SSH |
-| `sync(host, src, path, user, key, include, exclude)` | `None` | Rsync local dir to remote |
-| `deploy(host, src, path, user, build, key)` | `None` | `sync` + `docker compose up -d` |
+| `sync(host, src, path, user, key, include, exclude, port, check=True)` | `int` | Rsync local dir to remote; raises on failure unless `check=False`, then returns the exit code |
+| `sync_paths(host, paths, src, path, ..., last=None, dry_run=False)` | `list` | One rsync per path, `--delete` scoped to it; `last` pattern sent in a second pass; `host=None` copies to a local folder |
+| `rsync_cmds(paths, src, dest, ssh_e, ...)` | `list` | The commands `sync_paths` runs |
+| `ssh_cmd(host, user, key, port)`, `res_key(key, name)`, `askpass_env(pw)` | | The `ssh` command line, key lookup, and password-prompt context manager, for your own ssh or rsync |
+| `deploy(host, src, path, user, build, key, port, prune=True, keep=3)` | `None` | `sync` + `docker compose up -d`; keeps the replaced image for `rollback`, prunes dangling images after |
+| `keep_image(host, path, svc, img, keep)` | `str\|None` | Tag the running image `<ts>` and `prev`, keep the newest `keep` timestamps |
+| `kept_images(host, path, svc, img)` | `list[(tag, id)]` | Kept timestamped images, newest first |
+| `rollback(host, to=None, path, svc, img)` | `str` | Retag a kept image as latest (newest unlike the running one by default), tag the replaced one `undo`, restart the service |
+| `wait_http(url, ua, tries, poll)` | `bool` | Poll until the URL answers 200 |
+| `server_health(host, ...)` | `AttrDict` | RAM, swap, pct, load, disk, containers |
 | `vols_to_binds(vols)` | `list[str]` | `["/app/data"]` -> `["./data:/app/data"]` for Compose bind mounts |
-| `caddy_stack(domain, df, vols, root, ...)` | `Compose` | app + caddy + cloudflared + web network; saves files if `root=` given |
+| `caddy_stack(domain, df, vols, root, app_kw, caddy_kw, cloudflared_kw, caddyfile, write_caddyfile, ...)` | `Compose` | app + caddy + cloudflared + web network; `*_kw` add service settings (their `volumes` are appended); saves files if `root=` given |
 | `litestream_conf(dbs, bucket, endpoint, region, ...)` | `str` | Write Litestream 0.5 `litestream.yml` (replica path `<prefix>/<db path>`) |
 | `litestream_svc(vols, conf, env_file, cmd)` | `dict` | Litestream service kwargs for `Compose.svc()` (`cmd='replicate'` or a `restore ...`) |
 | `cloud_init_sh(yaml)` | `str` | Shell-script equivalent of `vps_init()` cloud-config (used for Lightsail user data) |
@@ -174,3 +182,4 @@ mv_skill_md(dry_run=False)   # writes to .agents/skills/vpseasy/ and ~/.claude/s
 - Lightsail bundle ids change over time (`small_3_0` is gone; current ones end in `_3_2`). List them with `Lightsail()._c.get_bundles()`.
 - Litestream db paths must be absolute container paths inside one of the app's `vols`; `litestream_conf` raises `ValueError` otherwise. A one-shot `litestream-restore` service must complete before `app` starts (`condition: service_completed_successfully`); the `litestream` replicate service starts after `app`. Verified end to end with `litestream/litestream:0.5` (v0.5.17): empty bucket → restore exits 0; wiped server → db restored before `app`.
 - Always use the private key path (no `.pub`) with `-i`. The public key is for `authorized_keys`, not for SSH client auth.
+- `rollback` restores the app image only. Files `sync` copied (Compose file, Caddyfile, bind mounts) and volumes stay as the last deploy left them.

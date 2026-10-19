@@ -764,17 +764,18 @@ wheels = [
 
 [[package]]
 name = "dockeasy"
-version = "0.0.4"
+version = "0.0.9"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "fastcore" },
     { name = "keyring" },
     { name = "notebook" },
     { name = "python-dotenv" },
+    { name = "pyyaml" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/50/af/516026ae86182fc11badeecda0a378feee811373d4d2d2e9cb7841b7a476/dockeasy-0.0.4.tar.gz", hash = "sha256:a43ffa24d289fd93480d2a31dc627038b8298ff40bba8f134096a9aa21f49dad", size = 22508, upload-time = "2026-05-17T10:27:06.033Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/0f/a0/c0fa40acc07da93b5c959c64a0fa96971184e400dcb7e31cdfa440b5f105/dockeasy-0.0.9.tar.gz", hash = "sha256:981482d00daf51210e109dafbee7d11605d7d471d58a5d4a74c3f75c9f292a52", size = 28658, upload-time = "2026-10-19T06:34:39.694Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b2/73/54c31ca08d78cd16a7d9edfac2d7e19bf040907e027c63470c386af921d7/dockeasy-0.0.4-py3-none-any.whl", hash = "sha256:915bd7c66f9abaf5702b9c07fc72d51d9d41cefaca531f771a7aea7666c6a6b9", size = 23777, upload-time = "2026-05-17T10:24:53.061Z" },
+    { url = "https://files.pythonhosted.org/packages/df/02/f50aed955d07f4b022ad704c3a50894b5c206d96919fe16b729def2c9acf/dockeasy-0.0.9-py3-none-any.whl", hash = "sha256:89e6ab0bddb241d0938bdeea7045ef8c77f4c1028ef7304f261acd36f5c6717f", size = 30024, upload-time = "2026-10-19T06:34:38.353Z" },
 ]
 
 [[package]]
@@ -4117,7 +4118,7 @@ dev = [
 requires-dist = [
     { name = "boto3", marker = "extra == 'aws'", specifier = ">=1.40" },
     { name = "boto3", marker = "extra == 'dev'", specifier = ">=1.40" },
-    { name = "dockeasy", specifier = ">=0.0.3" },
+    { name = "dockeasy", specifier = ">=0.0.9" },
     { name = "fastcloudinit", specifier = ">=0.0.5" },
     { name = "fastcore", specifier = ">=1.12.31" },
     { name = "hcloud", specifier = ">=2.17.0" },

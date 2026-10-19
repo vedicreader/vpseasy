@@ -74,7 +74,7 @@ print(mi.yaml)
       ssh_authorized_keys:
       - ssh-ed25519 AAAA... me
 
-[`vps_init`](https://vedicreader.github.io/vpseasy/core.html#vps_init) is for a real server on the internet, so it adds protection. It installs fail2ban, which blocks addresses that keep failing to log in, and unattended-upgrades, which applies security updates by itself. It turns on the UFW firewall with only SSH (port 22) allowed, sets up log rotation and reboots once setup is done. Extra packages go in `pkgs` and extra shell commands in `cmds`.
+[`vps_init`](https://vedicreader.github.io/vpseasy/core.html#vps_init) is for a real server on the internet, so it adds protection. It installs fail2ban, which blocks addresses that keep failing to log in, and unattended-upgrades, which applies security updates by itself. It turns on the UFW firewall with only SSH (port 22) allowed, sets up log rotation and reboots once setup is done. It also adds a 4 GB swap file with a low swappiness, so a memory spike slows the server down instead of killing a container; `swap=None` leaves swap out. Extra packages go in `pkgs` and extra shell commands in `cmds`.
 
 If you leave out `pub_keys`, either function generates a new key pair at `~/.ssh/<hostname>`, replacing any key already there, and returns its path as `key`. The other functions find that key when you give them the server’s name, so this is the simplest way to start. When you pass your own public keys, `key` is None.
 
@@ -188,6 +188,8 @@ mp.rm(_vm)
 
 [`vps_deploy`](https://vedicreader.github.io/vpseasy/core.html#vps_deploy) does the whole job. If no server with that name exists, it creates one from a [`vps_init`](https://vedicreader.github.io/vpseasy/core.html#vps_init) file with a new key pair at `~/.ssh/<name>`. It then waits for SSH and for cloud-init to finish, copies `src` to `/srv/app` and runs `docker compose up -d --build`. If the server already exists, it skips the creation and logs in with the key at `~/.ssh/<name>`, so running it again deploys your new code to the same server. It returns the server’s IP address, name and key path.
 
+Each deploy keeps the image it replaces, tagged with the time, and deletes dangling images and build cache afterwards. If a new build misbehaves, `rollback(ip)` puts the previous image back and restarts the app; `rollback(ip, to='undo')` reverses that. It restores the image only, not the copied files or the data. [`wait_http`](https://vedicreader.github.io/vpseasy/core.html#wait_http) waits until the site answers after a deploy, and [`server_health`](https://vedicreader.github.io/vpseasy/core.html#server_health) reports memory, swap, load, disk and each container.
+
 [`Hetzner.servers`](https://vedicreader.github.io/vpseasy/core.html#hetzner.servers) lists your servers and [`Hetzner.delete`](https://vedicreader.github.io/vpseasy/core.html#hetzner.delete) removes one by name, as the second cell shows.
 
 ``` python
@@ -280,6 +282,12 @@ print(f'Deployed at {svr.name}, key: {svr.key}')
     docker-compose check output: /srv/app/docker-compose.yml
     docker compose ran with build → 
     Deployed at myapp-prod, key: /Users/71293/.ssh/myapp-prod
+
+``` python
+wait_http('https://myapp.example.com/health')
+rollback(svr.ip, key=svr.key)   # back to the image before the last deploy
+server_health(svr.ip, key=svr.key)
+```
 
 ``` python
 o = lambda: [s['name'] for s in hz.servers()]
