@@ -29,7 +29,7 @@ class Multipass(Cli):
     'Run the multipass command to manage local Ubuntu VMs for testing.'
     def _run(self, cmd, *args): return run('multipass', cmd, *args)
     def launch(self,name,image='24.04',cpus=1,memory='1G',disk='10G',cloud_init:AttrDict=None, mounts=None) -> AttrDict:
-        'Start VM `name` with the cloud-init file from `multi_init` or `vps_init`, and return its name and SSH key path.'
+        'Start VM `name`, with a cloud-init file from `multi_init` or `vps_init` when given, and return its name and SSH key path.'
         args = ['multipass', 'launch', image, '-n', name, '-c', str(cpus), '-m', memory, '-d', disk]
         for hp, vp in (mounts or {}).items(): args += ['--mount', f'{hp}:{vp}']
         if cloud_init: args += ['--cloud-init', '-']
@@ -64,31 +64,41 @@ def deploy_mp(name, src, path='/srv/app', key=None, build=True, verbose=True) ->
 # %% ../nbs/00_core.ipynb #d9b26e5a
 dock_cmd = ['curl -fsSL https://get.docker.com | sh', 'usermod -aG docker {username}','systemctl enable --now docker']
 def keygen(path): return ['ssh-keygen', '-t', 'ed25519', '-f', str(path), '-N', '', '-q']
-def _mk_kp(h,pub): return AttrDictDefault(pub_str=listify(pub)) if pub else gen_key(h)
-def gen_key(slug, key_dir=None):
-    'Make an ed25519 key pair at `<key_dir>/<slug>`, replacing any existing one, and return its paths and public key text.'
+def _mk_kp(h,pub,key_dir=None): return AttrDictDefault(pub_str=listify(pub)) if pub else gen_key(h, key_dir)
+def gen_key(slug, key_dir=None, replace=False):
+    'Make an ed25519 key pair at `<key_dir>/<slug>` and return its paths and public key text. An existing private key is reused, and its public key is derived from it, unless `replace` is True.'
     d = Path(key_dir or Path.home()/'.ssh')
     priv, pub = d/slug, d/f'{slug}.pub'
-    subprocess.run(keygen(priv), input='y\n', text=True, capture_output=True, check=True)
-    return AttrDict(key=priv, pub=pub, pub_str=[pub.read_text().strip()])
+    d.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if replace: priv.unlink(missing_ok=True); pub.unlink(missing_ok=True)
+    if not priv.exists(): subprocess.run(keygen(priv), text=True, capture_output=True, check=True)
+    pub_str = subprocess.run(['ssh-keygen', '-y', '-f', str(priv)], text=True, capture_output=True, check=True).stdout.strip()
+    if not pub.exists() or pub.read_text().strip() != pub_str: pub.write_text(pub_str + '\n')
+    return AttrDict(key=priv, pub=pub, pub_str=[pub_str])
 
 def swap_cmds(size='4G', swappiness=10):
     'Return shell commands that add a `size` swap file once and set the kernel swappiness.'
     return [f'[ -f /swapfile ] || {{ fallocate -l {size} /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile && echo "/swapfile none swap sw 0 0" >> /etc/fstab; }}',
             f'echo vm.swappiness={swappiness} > /etc/sysctl.d/99-vpseasy-swap.conf && sysctl -p /etc/sysctl.d/99-vpseasy-swap.conf']
 
-def vps_init(hostname, pub_keys=None, username='deploy', docker=True, pkgs=None, cmds=None, swap='4G', swappiness=10, **kw):
+def vps_init(
+    hostname, pub_keys=None, username='deploy', docker=True, pkgs=None, cmds=None, swap='4G', swappiness=10,
+    key_dir=None, # folder for the generated key pair when `pub_keys` is None; default `~/.ssh`
+    **kw):
     'Write a cloud-init file for a public server, generating a key pair if `pub_keys` is None.'
-    kp = _mk_kp(hostname, pub_keys)
+    kp = _mk_kp(hostname, pub_keys, key_dir)
     cmds = (swap_cmds(swap, swappiness) if swap else []) + ([c.format(username=username) for c in dock_cmd] if docker else []) + listify(cmds)
     pkgs = ['curl', 'fail2ban', 'unattended-upgrades'] + listify(pkgs)
     yaml = cloud_init_config(hostname=hostname,username=username,pub_keys=kp.pub_str,packages=pkgs,cmds=cmds,**kw)
     return AttrDict(yaml=yaml, key=kp.key)
 
 # %% ../nbs/00_core.ipynb #bqtzq0gu82l
-def multi_init(hostname, pub_keys=None, username='deploy', docker=True, pkgs=None, cmds=None):
+def multi_init(
+    hostname, pub_keys=None, username='deploy', docker=True, pkgs=None, cmds=None,
+    key_dir=None # folder for the generated key pair when `pub_keys` is None; default `~/.ssh`
+    ):
     'Write a cloud-init file for a local Multipass VM, generating a key pair if `pub_keys` is None.'
-    kp = _mk_kp(hostname, pub_keys)
+    kp = _mk_kp(hostname, pub_keys, key_dir)
     cmds = ([c.format(username=username) for c in dock_cmd] if docker else []) + listify(cmds)
     pkgs = ['curl'] + listify(pkgs)
     kw = {**runcmd(cmds), **reboot()} if cmds else {}
@@ -148,7 +158,10 @@ class Hetzner:
 _ci_keys = {'hostname', 'users', 'write_files', 'apt', 'packages', 'runcmd', 'package_update', 'package_upgrade', 'ssh_pwauth'}
 _ci_skip = {'preserve_hostname', 'disable_root', 'power_state'}
 _user_keys = {'name', 'groups', 'shell', 'sudo', 'ssh_authorized_keys'}
-def _heredoc(path, content, eof='VPSEASY_EOF'): return f"cat > {shlex.quote(str(path))} <<'{eof}'\n{content.rstrip(chr(10))}\n{eof}"
+def _heredoc(path, content, eof='VPSEASY_EOF'):
+    lines = set(content.splitlines())
+    while eof in lines: eof += '_X'
+    return f"cat > {shlex.quote(str(path))} <<'{eof}'\n{content.rstrip(chr(10))}\n{eof}"
 
 def _perms(m):
     'Turn a cloud-init file mode, int or octal string, into a checked octal string.'
@@ -213,7 +226,7 @@ class Lightsail:
         except self._c.exceptions.NotFoundException: return None
 
     def server_ip(self, name, tout=300, interval=5) -> str:
-        'Wait until instance `name` is running and return its public IPv4 address.'
+        'Wait until instance `name` is running and return its public IPv4 address. Raise `ValueError` if it does not exist and `TimeoutError` after `tout` seconds.'
         dl = time.time() + tout
         while time.time() < dl:
             i = self.get(name)
@@ -257,7 +270,7 @@ class Lightsail:
             with suppress(self._c.exceptions.NotFoundException): self._c.release_static_ip(staticIpName=f'{name}-ip')
 
     def bucket(self, name, bundle='small_1_0'):
-        'Create bucket `name` if missing and return a new access key for it, whose secret is shown only this once.'
+        'Create bucket `name` if it is missing and return a new access key for it. AWS shows the secret only once.'
         try: self._c.get_buckets(bucketName=name)
         except self._c.exceptions.NotFoundException: self._c.create_bucket(bucketName=name, bundleId=bundle)
         k = self._c.create_bucket_access_key(bucketName=name)['accessKey']
@@ -273,7 +286,7 @@ def ssh_cmd(host, user, key, port=22):
     return a + [f'{user}@{host}']
 
 def res_key(key=None, name=None):
-    'Pick the SSH key: `key` if given, else `~/.ssh/<name>`, which must exist, else None.'
+    'Return `key` if given. Otherwise return the path `~/.ssh/<name>` if `name` is given, and raise `FileNotFoundError` if that file is missing. Otherwise return None.'
     if key: return str(key)
     if not name: return None
     p = Path.home()/'.ssh'/name
@@ -305,7 +318,7 @@ _ssh, _res_key, _askpass_env = ssh_cmd, res_key, askpass_env
 
 def run_ssh(host, *cmds, user='deploy', key=None, name=None, port=22, key_pass=None, password=None, check=True,
             verbose=False, stdin_data=None):
-    'Run `cmds` on `host` over SSH, joined with `&&`, and return the output.'
+    'Run `cmds` on `host` over SSH, joined with `&&`. Return the output, or `(exit code, output)` when `check` is False. Raise `IOError` on failure when `check` is True.'
     key_pass, password = _resolve_cred(key_pass, password)
     c = ssh_cmd(host, user, res_key(key, name), port) + [' && '.join(cmds)]
     with askpass_env(key_pass or password): res = subprocess.run(c, input=stdin_data, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -316,20 +329,43 @@ def run_ssh(host, *cmds, user='deploy', key=None, name=None, port=22, key_pass=N
     return (res.returncode, out) if not check else out
 
 
+def _bind_paths(src, path):
+    'Return Compose bind sources inside the remote deploy root, relative to that root.'
+    f = first(Path(src)/n for n in ('compose.yaml', 'compose.yml', 'docker-compose.yaml', 'docker-compose.yml') if (Path(src)/n).exists())
+    if f is None: return []
+    d, root, paths = yaml.safe_load(f.read_text()) or {}, Path(path), []
+    for svc in (d.get('services') or {}).values():
+        for v in svc.get('volumes') or []:
+            if isinstance(v, dict):
+                if v.get('type') != 'bind': continue
+                source = v['source']
+            else:
+                if ':' not in v: continue
+                source = v.split(':')[0]
+                if not source.startswith(('.', '/')): continue
+            target = Path(posixpath.normpath(str(root/source)))
+            if target == root: raise ValueError('A bind source names the whole deploy root; sync would exclude every file')
+            if target.is_relative_to(root): paths.append(target.relative_to(root).as_posix())
+    return paths
+
 def sync(host, src='.', path='/srv/app', user='deploy', key=None, name=None, include=None, exclude=None,
          extra=None, key_pass=None, password=None, port=22, verbose=False, check=True):
-    'Copy local directory `src` to `path` on `host` with rsync, deleting remote files that are not in `src`, and return rsync\'s exit code.'
+    'Copy local directory `src` to `path` on `host` with rsync, delete remote files that are not in `src`, raise `CalledProcessError` if rsync fails and `check` is True, and return rsync\'s exit code.'
+    binds = _bind_paths(src, path)
     key_pass, password = _resolve_cred(key_pass, password)
-    inner = f'mkdir -p {path} && chown {user}:{user} {path}'
-    a = f'[ -d {path} -a -w {path} ] || sudo {'-S' if password else ''} sh -c {shlex.quote(inner)}'
+    qp, qu = shlex.quote(str(path)), shlex.quote(user)
+    inner = f'mkdir -p {qp} && chown {qu}:{qu} {qp}'
+    a = f'[ -d {qp} -a -w {qp} ] || sudo{" -S" if password else ""} sh -c {shlex.quote(inner)}'
     stdin_data = (password + chr(10)).encode() if password else None
     kw = dict(user=user, key=key, name=name, port=port, key_pass=key_pass, stdin_data=stdin_data,
               verbose=verbose, password=password)
     run_ssh(host, a, **kw)
     if verbose: print(f'Ensured remote path {path} exists and is writable by {user}')
-    ssh_e = ' '.join(ssh_cmd(host, user, res_key(key, name), port)[:-1])
-    inc, exc = listify(include), listify(exclude)
+    ssh_e = shlex.join(ssh_cmd(host, user, res_key(key, name), port)[:-1])
+    inc = listify(include)
+    exc = listify(exclude)
     cmd = ['rsync', '-azh' + ('m' if inc else ''), '--info=progress2','--delete', '-e', ssh_e, *listify(extra)]
+    for p in binds: cmd += ['--filter', f'P /{p}', '--filter', f'P /{p}/***']
     for p in exc: cmd += ['--exclude', p]
     if inc:
         for p in inc: cmd+=(['--include',p] if not p.endswith('/') else ['--include',p.rstrip('/'),'--include',p+'**'])
@@ -341,7 +377,7 @@ def sync(host, src='.', path='/srv/app', user='deploy', key=None, name=None, inc
     return r.returncode
 
 def rsync_cmds(paths, src, dest, ssh_e=None, exclude=None, delete=True, mkpath=True, itemize=True, dry_run=False, last=None):
-    'Return one rsync command per path in `paths`, from under `src` to the same path under `dest`, with a first pass leaving out `last` when given.'
+    'Return one rsync command per path in `paths`, from under `src` to the same path under `dest`. When `last` is given, each path first gets a command that leaves out `last`. Raise `ValueError` for a path that names `src` or leaves it.'
     base = ['rsync', '-azh', *(['--mkpath'] if mkpath else []), *(['--delete'] if delete else []), *(['--itemize-changes'] if itemize else []),
             *(['-e', ssh_e] if ssh_e else []), *(['--dry-run'] if dry_run else [])]
     for x in listify(exclude): base += ['--exclude', x]
@@ -351,13 +387,20 @@ def rsync_cmds(paths, src, dest, ssh_e=None, exclude=None, delete=True, mkpath=T
         if q.split('/')[0] in ('.', '..') or r == s or not r.is_relative_to(s):
             raise ValueError(f'{p!r} names the deploy root or leaves it, so --delete would reach the whole folder; name the paths inside it')
     sd = lambda p: [f'{str(src).rstrip("/")}/{p}', f'{str(dest).rstrip("/")}/{p}'] if str(p).endswith('/') or not Path(src, p).is_dir() else sd(f'{p}/')
-    return [c for p in listify(paths) for c in ([base + ['--exclude', last] + sd(p)] if last else []) + [base + sd(p)]]
+    binds = _bind_paths(src, str(dest).split(':', 1)[-1])
+    commands = []
+    for p in listify(paths):
+        q = posixpath.normpath(str(p).strip('/'))
+        protected = any(q == b or q.startswith(b + '/') for b in binds)
+        rules = ['--filter', 'P /***'] if protected else [v for b in binds if b.startswith(q + '/') for v in ('--filter', f'P /{b[len(q)+1:]}', '--filter', f'P /{b[len(q)+1:]}/***')]
+        commands += ([base + rules + ['--exclude', last] + sd(p)] if last else []) + [base + rules + sd(p)]
+    return commands
 
 def sync_paths(host, paths, src='.', path='/srv/app', user='deploy', key=None, name=None, port=22, key_pass=None, password=None,
                exclude=None, delete=True, mkpath=True, itemize=True, dry_run=False, last=None, verbose=True):
     'Copy each of `paths` under `src` to the same path under `path` on `host`, or in a local folder when `host` is None, and return the commands run.'
     key_pass, password = _resolve_cred(key_pass, password)
-    ssh_e = ' '.join(ssh_cmd(host, user, res_key(key, name), port)[:-1]) if host else None
+    ssh_e = shlex.join(ssh_cmd(host, user, res_key(key, name), port)[:-1]) if host else None
     cs = [c for c in rsync_cmds(paths, src, f'{user}@{host}:{path}' if host else path, ssh_e, exclude, delete, mkpath, itemize, dry_run, last)
           if Path(c[-2]).exists()]
     for c in cs:
@@ -380,7 +423,7 @@ def _chk_compose(host, path, f='docker-compose.yml', u='deploy', k=None, name=No
 	'Return True if the Compose file `f` exists in `path` on `host`.'
 	try:
 		key_pass, password = _resolve_cred(key_pass, password)
-		r = run_ssh(host, f'ls {path}/{f}', user=u, key=k, name=name, port=port, key_pass=key_pass, password=password)
+		r = run_ssh(host, f'ls {shlex.quote(f"{path}/{f}")}', user=u, key=k, name=name, port=port, key_pass=key_pass, password=password)
 		if verbose: print(f'docker-compose check output: {r.strip()}')
 		return 'docker-compose' in r
 	except Exception as e:
@@ -399,13 +442,13 @@ def deploy(host, src='.', path='/srv/app', user='deploy', build=True, key=None, 
     sk = dict(user=user, key=key, name=name, port=port, key_pass=key_pass, password=password)
     im = _img(path, svc, img)
     if (old := _id(host, f'{im}:latest', **sk) if build and keep else None): _stamp(host, im, old, kept_images(host, path, svc, img, **sk), **sk)
-    a = f'cd {path} && docker compose up -d --remove-orphans' + (' --build' if build else '')
+    a = f'cd {shlex.quote(str(path))} && docker compose up -d --remove-orphans' + (' --build' if build else '')
     try: r = run_ssh(host, a, verbose=verbose, **sk)
     finally:
         if build and keep: keep_image(host, path, svc, img, keep, prev=old, **sk)   # a build whose restart failed still holds `latest`
     if verbose: print('docker compose ran' + (' with build' if build else ''), '→', r.strip())
     if prune:
-        r = run_ssh(host, 'docker image prune -f | tail -1; docker builder prune -f | tail -1', **sk)
+        r = run_ssh(host, 'docker image prune -f | tail -1; docker builder prune -f --filter until=168h | tail -1', **sk)
         if verbose: print('pruned:', r.replace(chr(10), '; '))
 
 
@@ -466,20 +509,20 @@ def wait_ready(host,
 def vps_deploy(name, # server name, also the key file name under ~/.ssh when `key` is not given
                src,  # local path to sync and deploy
                provider, # Hetzner(), Lightsail() or anything with get, server_ip and create
-               user='deploy', # remote username to deploy with (must match cloud-init user)
-               key=None, # optional SSH private key path or Path object (overrides name-based lookup of ~/.ssh/<name>)
+               user='deploy', # login user on the server; also the user a new server's cloud-init creates
+               key=None, # path of the SSH private key, whose `.pub` file a new server authorizes; overrides the lookup of `~/.ssh/<name>`
                path='/srv/app', # remote path to sync to and deploy at
-               build=True, # whether to pass --build to docker compose up
+               build=True, # pass `--build` to `docker compose up` when True
                include=None, # rsync include (whitelist) patterns
                exclude=None, # rsync exclude (blacklist) patterns
-               extra=None, # extra rsync flags forwarded to sync() e.g. '--checksum' or ['--ignore-times','--partial']
-               key_pass=None, # passphrase for the SSH key, if it's encrypted
-               password=None, # server password for SSH auth (alternative to key-based auth)
+               extra=None, # extra rsync flags passed to `sync`, such as '--checksum' or ['--ignore-times','--partial']
+               key_pass=None, # passphrase of an encrypted SSH key; True asks for it
+               password=None, # login password of the server; True asks for it
                tout=600, # seconds to wait for SSH, and for each round of cloud-init polling
                retries=2, # extra rounds of cloud-init polling before raising TimeoutError
-               verbose=True, # whether to print verbose logs during wait and deploy steps
+               verbose=True, # print progress while waiting and deploying
                port=22, # SSH port on the server
-               prune=True, # delete dangling images and the build cache after the build
+               prune=True, # delete dangling images and build cache older than 168 hours after deploy
                keep=3, # timestamped images of the app kept for `rollback`; 0 keeps none
                svc='app', # the Compose service whose image is kept
                img=None, # that image's name when the Compose project is not named after `path`
@@ -491,8 +534,10 @@ def vps_deploy(name, # server name, also the key file name under ~/.ssh when `ke
         ip, key = provider.server_ip(name), _res_key(key=key, name=name)
         if verbose: print(f'{name} already exists at {ip}, checking cloud-init ...')
     else:
-        svr = provider.create(name, cloud_init=vps_init(name), **create_kw)
-        ip, key = svr.ip, svr.key
+        if key and not Path(f'{key}.pub').exists(): raise FileNotFoundError(f'No public key at {key}.pub to authorize on the new server')
+        pub = Path(f'{key}.pub').read_text().strip() if key else None
+        svr = provider.create(name, cloud_init=vps_init(name, pub, username=user), **create_kw)
+        ip, key = svr.ip, svr.key or key
         subprocess.run(['ssh-keygen', '-R', ip], capture_output=True)
         if verbose: print(f'{name} provisioning at {ip} ...')
     wait_ready(ip, u=user, k=key, tout=tout, retries=retries, key_pass=key_pass, password=password, verbose=verbose, port=port)
@@ -518,7 +563,7 @@ def kept_images(host, path='/srv/app', svc='app', img=None, **kw) -> list:
     return sorted((tuple(l.split()[:2]) for l in out.splitlines() if len(l.split()) > 1 and _TS.fullmatch(l.split()[0])), reverse=True)
 
 def _stamp(host, img, iid, ks, **kw):
-    'The timestamp tag of image `iid` in `ks`, first tagging it with its build time, and adding it to `ks`, when it has none.'
+    'Return the timestamp tag of image `iid` from `ks`. If the image has none, tag it with its build time, add it to `ks` and return that tag.'
     if t := first(t for t, i in ks if i == iid): return t
     t = re.sub(r'[-:]', '', _out(run_ssh(host, f"docker image inspect -f '{{{{.Created}}}}' {iid} 2>/dev/null || true", **kw)))[:15]
     if not _TS.fullmatch(t): t = time.strftime('%Y%m%dT%H%M%S', time.gmtime())
@@ -528,7 +573,7 @@ def _stamp(host, img, iid, ks, **kw):
     return t
 
 def keep_image(host, path='/srv/app', svc='app', img=None, keep=3, prev=None, **kw):
-    'Tag the image `svc` runs, and image `prev` when given, with their build times, tag `prev` as `prev`, delete the timestamped tags past the newest `keep` but those two, and return the running tag.'
+    'Tag the image that `svc` runs, and the image `prev` when given, with their build times. Tag `prev` as `prev`. Delete the timestamped tags past the newest `keep`, except those of the two images. Return the running tag.'
     img = _img(path, svc, img)
     if not (cur := _id(host, f'{img}:latest', **kw)): return None
     ks = kept_images(host, path, svc, img, **kw)
@@ -549,7 +594,7 @@ def rollback(host, to=None, path='/srv/app', svc='app', img=None, user='deploy',
     if to is None and (to := first(t for t, i in ks if i != cur and (ct is None or t < ct))) is None: raise ValueError(f'no kept image of {img} is older than the running one')
     if not (tid := dict(ks).get(to) or _id(host, f'{img}:{to}', **kw)): raise ValueError(f'{img}:{to} is not on {host}; kept: {[t for t, _ in ks]}')
     run_ssh(host, *([f'docker tag {cur} {img}:prev'] if cur and cur != tid else []), f'docker tag {tid} {img}:latest',
-            f'cd {path} && docker compose up -d --no-build --force-recreate {svc}', **kw)
+            f'cd {shlex.quote(str(path))} && docker compose up -d --no-build --force-recreate {svc}', **kw)
     if verbose: print(f'{svc} runs {img}:{to}; {img}:prev is the image it replaced')
     return to
 

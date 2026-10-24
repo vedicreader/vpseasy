@@ -7,7 +7,7 @@ description: >
 
 # vpseasy
 
-Provision VPSes, test locally with Multipass, deploy Docker Compose apps — all from Python.
+Provision VPSes, test locally with Multipass, and deploy Docker Compose apps, all from Python.
 
 ## Setup
 
@@ -46,7 +46,7 @@ All providers share `servers()`, `get(name)`, `server_ip(name)`, `create(name, c
 | `Hetzner().key_names()` | `list[str]` | SSH key names registered in Hetzner (root access only) |
 | `Lightsail().create(name, bundle, ...)` | `AttrDict(ip, name, key, resp)` | Provision Lightsail instance (idempotent, static IP, port 22 only, daily snapshots) |
 | `Lightsail().bucket(name)` | `AttrDict(bucket, region, endpoint, key_id, secret)` | Bucket (created if missing) + new access key for backups; Lightsail allows two keys per bucket, secret shown only once |
-| `vps_deploy(name, src, provider, ...)` | `AttrDict(ip, name, key)` | Full pipeline on any provider: provision → wait → deploy (idempotent) |
+| `vps_deploy(name, src, provider, ...)` | `AttrDict(ip, name, key)` | Full pipeline on any provider: provision, wait, deploy (idempotent) |
 | `hetzner_deploy(name, src, ...)` | `AttrDict(ip, name, key)` | `vps_deploy` on Hetzner |
 | `wait_ssh(host, u, k, tout)` | `True` | Poll until SSH is up |
 | `wait_ready(host, u, k, tout, retries)` | `True` | Poll SSH then cloud-init until done; retries on timeout |
@@ -76,7 +76,7 @@ All providers share `servers()`, `get(name)`, `server_ip(name)`, `create(name, c
 
 ```python
 from vpseasy.core import *
-ci = multi_init('testvm')          # AttrDict(yaml, key) — auto-generates key pair
+ci = multi_init('testvm')          # AttrDict(yaml, key); generates a key pair
 mp = Multipass()
 vm = mp.launch('testvm', cloud_init=ci)
 ip = mp.ip('testvm')
@@ -86,7 +86,7 @@ mp.rm('testvm')
 
 ### Hetzner production deploy
 
-`hetzner_deploy` is idempotent — re-running against an existing server skips provisioning and goes straight to cloud-init check + deploy.
+`hetzner_deploy` is idempotent. Running it again for an existing server skips provisioning and goes straight to the cloud-init check and the deploy.
 
 ```python
 from vpseasy.core import *
@@ -122,8 +122,8 @@ from vpseasy.core import *
 hz = Hetzner()
 ci = vps_init('myapp-prod')             # auto-generates ~/.ssh/myapp-prod key pair
 svr = hz.create('myapp-prod', cloud_init=ci, location='hel1')
-# NOTE: do not pass ssh_keys= together with cloud_init= — they are conflicting strategies.
-# ssh_keys injects into root only; cloud_init creates a deploy user with its own key.
+# Do not pass ssh_keys= together with cloud_init=. They conflict.
+# ssh_keys adds keys for root only. cloud_init creates a deploy user with its own key.
 wait_ready(svr.ip, k=svr.key, tout=600)
 deploy(svr.ip, './myapp', key=svr.key)
 ```
@@ -157,29 +157,27 @@ mv_skill_md(dry_run=False)   # writes to .agents/skills/vpseasy/ and ~/.claude/s
 
 ## SSH key resolution
 
-`_resolve_key` resolves the SSH key in this order:
+`res_key(key, name)` resolves the SSH key in this order:
 
 1. Explicit `key=` path argument
-2. `name=` slug → `~/.ssh/<name>` (raises `FileNotFoundError` if missing)
-3. `SSH_KEY_PATH` environment variable
-4. `SSH_PRIVATE_KEY` environment variable (PEM string, written to `/tmp/.vpseasy_<uid>.pem`)
-5. `None` (falls back to SSH agent)
+2. `name=` slug: `~/.ssh/<name>` (raises `FileNotFoundError` if missing)
+3. `None` (falls back to SSH agent)
+
+vpseasy reads no `SSH_KEY_PATH` or `SSH_PRIVATE_KEY` environment variable.
 
 ## Env vars
 
 | Var | Used by | Notes |
 |-----|---------|-------|
 | `HCLOUD_TOKEN` | `Hetzner()` | Required for Hetzner |
-| `SSH_KEY_PATH` | `_resolve_key()` | Optional explicit key path |
-| `SSH_PRIVATE_KEY` | `_resolve_key()` | PEM string, written to `/tmp/.vpseasy_<uid>.pem` |
 
 ## Gotchas
 
-- `ssh_keys` on `Hetzner.create()` injects into the **root** user only — not the `deploy` user created by cloud-init. Passing both `ssh_keys` and `cloud_init` raises `ValueError`.
-- `cloud-init status` returns exit code 2 ("done with warnings") on Ubuntu 24.04 — `chk_cloud_init` uses `check=False` to handle this correctly.
+- `ssh_keys` on `Hetzner.create()` adds keys for the **root** user only. It does not add them for the `deploy` user that cloud-init creates. Passing both `ssh_keys` and `cloud_init` raises `ValueError`.
+- `cloud-init status` returns exit code 2 ("done with warnings") on Ubuntu 24.04. `chk_cloud_init` does not call it. It reads the marker files `/var/lib/vpseasy/ready` and `/var/lib/vpseasy/error` (written by the Lightsail script), or `/var/lib/cloud/instance/boot-finished`.
 - SSH `StrictHostKeyChecking=accept-new` silently accepts new hosts but rejects changed host keys. `vps_deploy` (and so `hetzner_deploy`) runs `ssh-keygen -R <ip>` after provisioning to clear stale `known_hosts` entries when an IP is reused.
 - Lightsail runs user data as a shell script, so `Lightsail.create()` converts `vps_init()` cloud-config with `cloud_init_sh()` (supports hostname, users, write_files, apt conf, packages, runcmd; other keys raise). Progress: `/var/log/vpseasy-init.log`, done marker `/var/lib/vpseasy/ready`.
 - Lightsail bundle ids change over time (`small_3_0` is gone; current ones end in `_3_2`). List them with `Lightsail()._c.get_bundles()`.
-- Litestream db paths must be absolute container paths inside one of the app's `vols`; `litestream_conf` raises `ValueError` otherwise. A one-shot `litestream-restore` service must complete before `app` starts (`condition: service_completed_successfully`); the `litestream` replicate service starts after `app`. Verified end to end with `litestream/litestream:0.5` (v0.5.17): empty bucket → restore exits 0; wiped server → db restored before `app`.
+- Litestream db paths must be absolute container paths inside one of the app's `vols`; `litestream_conf` raises `ValueError` otherwise. A one-shot `litestream-restore` service must complete before `app` starts (`condition: service_completed_successfully`); the `litestream` replicate service starts after `app`. Verified end to end with `litestream/litestream:0.5` (v0.5.17): with an empty bucket, restore exits 0; on a wiped server, the db is restored before `app` starts.
 - Always use the private key path (no `.pub`) with `-i`. The public key is for `authorized_keys`, not for SSH client auth.
 - `rollback` restores the app image only. Files `sync` copied (Compose file, Caddyfile, bind mounts) and volumes stay as the last deploy left them.

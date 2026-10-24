@@ -7,7 +7,7 @@ A VPS (virtual private server) is a small Linux machine you rent from a cloud pr
 
 The setup of a new server is written down in a cloud-init file. Cloud-init is the program that Ubuntu cloud images run on their first boot. It reads a YAML file supplied when the server is created, and from it installs packages, creates users and runs commands. vpseasy writes that file for you.
 
-You can try the file on your own computer before paying for a server. [Multipass](https://multipass.run) starts Ubuntu virtual machines locally and accepts the same cloud-init file, so a mistake in the setup shows up on your laptop in a few minutes rather than on a live server.
+You can try the file on your own computer before paying for a server. [Multipass](https://multipass.run) starts Ubuntu virtual machines locally and accepts the same cloud-init file. A mistake in the setup then shows up on your laptop in a few minutes, and not on a live server.
 
 Once a server is up, vpseasy copies your app directory to it with rsync and runs `docker compose up`. It can also write the Compose file for a common layout, with the app behind the Caddy web server and a Cloudflare tunnel, and add Litestream to back up SQLite databases to a storage bucket.
 
@@ -32,7 +32,7 @@ When you need more control than [`vps_deploy`](https://vedicreader.github.io/vps
 
 ## SSH keys
 
-The server will accept logins only with an SSH key. [`load_pub_keys`](https://vedicreader.github.io/vpseasy/core.html#load_pub_keys) reads your existing public keys from `~/.ssh/id_*.pub`, ready to hand to the cloud-init functions below. On the machine that built these docs it found four:
+The server accepts logins only with an SSH key. [`load_pub_keys`](https://vedicreader.github.io/vpseasy/core.html#load_pub_keys) reads your existing public keys from `~/.ssh/id_*.pub`. You can pass them to the cloud-init functions below. The cell below prints how many keys it found:
 
 ``` python
 pub_keys = load_pub_keys()
@@ -74,9 +74,9 @@ print(mi.yaml)
       ssh_authorized_keys:
       - ssh-ed25519 AAAA... me
 
-[`vps_init`](https://vedicreader.github.io/vpseasy/core.html#vps_init) is for a real server on the internet, so it adds protection. It installs fail2ban, which blocks addresses that keep failing to log in, and unattended-upgrades, which applies security updates by itself. It turns on the UFW firewall with only SSH (port 22) allowed, sets up log rotation and reboots once setup is done. It also adds a 4 GB swap file with a low swappiness, so a memory spike slows the server down instead of killing a container; `swap=None` leaves swap out. Extra packages go in `pkgs` and extra shell commands in `cmds`.
+[`vps_init`](https://vedicreader.github.io/vpseasy/core.html#vps_init) is for a real server on the internet and adds protection. It installs fail2ban, which blocks addresses that keep failing to log in. It installs unattended-upgrades, which applies security updates by itself. It turns on the UFW firewall with only SSH (port 22) allowed, sets up log rotation and reboots once setup is done. It also adds a 4 GB swap file with a low swappiness. A memory spike then slows the server down and does not kill a container. `swap=None` leaves swap out. Extra packages go in `pkgs` and extra shell commands in `cmds`.
 
-If you leave out `pub_keys`, either function generates a new key pair at `~/.ssh/<hostname>`, replacing any key already there, and returns its path as `key`. The other functions find that key when you give them the server’s name, so this is the simplest way to start. When you pass your own public keys, `key` is None.
+If you leave out `pub_keys`, either function uses the key pair at `~/.ssh/<hostname>` and returns its path as `key`. It generates the key pair when no private key is there. It reuses a private key that is already there. To make a new key pair, call `gen_key(hostname, replace=True)` first. The other functions find that key when you give them the name of the server. This is the simplest way to start. When you pass your own public keys, `key` is None.
 
 ``` python
 ci = vps_init('demo-prod', ['ssh-ed25519 AAAA... me'])   # omit pub_keys to generate ~/.ssh/demo-prod
@@ -162,7 +162,7 @@ print(f'VM at {ip}, key: {vm.key}')
     Creating testvm  Configuring testvm  Starting testvm  Waiting for initialization to complete  Launched: testvm
     VM at 192.168.2.56, key: /Users/71293/.ssh/testvm
 
-[`deploy_mp`](https://vedicreader.github.io/vpseasy/core.html#deploy_mp) copies a local directory into the VM and starts it with `docker compose up -d`. It logs in with the key at `~/.ssh/<vm name>`, so it works when [`multi_init`](https://vedicreader.github.io/vpseasy/core.html#multi_init) generated the key. The example above passes a placeholder public key; to run it for real, leave out `pub_keys` so a key is made at `~/.ssh/testvm`. Compose is only started if Docker works on the VM and the directory has a `docker-compose.yml`. Otherwise the files are copied and nothing else happens, which is what `docker=False` gives you here. `mp.rm` deletes the VM when you are done.
+[`deploy_mp`](https://vedicreader.github.io/vpseasy/core.html#deploy_mp) copies a local directory into the VM and starts it with `docker compose up -d`. It logs in with the key at `~/.ssh/<vm name>`. This works when [`multi_init`](https://vedicreader.github.io/vpseasy/core.html#multi_init) generated the key. The example above passes a placeholder public key. To run it for real, leave out `pub_keys` and [`multi_init`](https://vedicreader.github.io/vpseasy/core.html#multi_init) makes a key at `~/.ssh/testvm`. [`deploy_mp`](https://vedicreader.github.io/vpseasy/core.html#deploy_mp) starts Compose only if Docker works on the VM and the directory has a `docker-compose.yml`. Otherwise it copies the files and does nothing else. That is the result with `docker=False` here. `mp.rm` deletes the VM when you are done.
 
 ``` python
 deploy_mp(_vm, src=_app)
@@ -186,9 +186,9 @@ mp.rm(_vm)
 
 [Hetzner Cloud](https://www.hetzner.com/cloud) rents VPSes in Europe and the US. Set `HCLOUD_TOKEN` to an API token from its console. [`hetzner_deploy`](https://vedicreader.github.io/vpseasy/core.html#hetzner_deploy) runs [`vps_deploy`](https://vedicreader.github.io/vpseasy/core.html#vps_deploy) with a [`Hetzner`](https://vedicreader.github.io/vpseasy/core.html#hetzner) provider and Hetzner’s defaults, Ubuntu 24.04 on a `cx23` server.
 
-[`vps_deploy`](https://vedicreader.github.io/vpseasy/core.html#vps_deploy) does the whole job. If no server with that name exists, it creates one from a [`vps_init`](https://vedicreader.github.io/vpseasy/core.html#vps_init) file with a new key pair at `~/.ssh/<name>`. It then waits for SSH and for cloud-init to finish, copies `src` to `/srv/app` and runs `docker compose up -d --build`. If the server already exists, it skips the creation and logs in with the key at `~/.ssh/<name>`, so running it again deploys your new code to the same server. It returns the server’s IP address, name and key path.
+[`vps_deploy`](https://vedicreader.github.io/vpseasy/core.html#vps_deploy) does the whole job. If no server with that name exists, it creates one from a [`vps_init`](https://vedicreader.github.io/vpseasy/core.html#vps_init) file with a new key pair at `~/.ssh/<name>`. It then waits for SSH and for cloud-init to finish, copies `src` to `/srv/app` and runs `docker compose up -d --build`. If the server already exists, [`vps_deploy`](https://vedicreader.github.io/vpseasy/core.html#vps_deploy) skips the creation and logs in with the key at `~/.ssh/<name>`. Running it again deploys your new code to the same server. It returns the IP address, the name and the key path of the server.
 
-Each deploy keeps the images it builds, tagged with their build time, and deletes dangling images and build cache afterwards. If a new build misbehaves, `rollback(ip)` puts the previous image back and restarts the app; `rollback(ip, 'prev')` reverses that. It restores the image only, not the copied files or the data. [`wait_http`](https://vedicreader.github.io/vpseasy/core.html#wait_http) waits until the site answers after a deploy, and [`server_health`](https://vedicreader.github.io/vpseasy/core.html#server_health) reports memory, swap, load, disk and each container.
+Each deploy keeps the images that it builds, tagged with their build time. It then deletes dangling images and build cache. If a new build misbehaves, `rollback(ip)` puts the previous image back and restarts the app. `rollback(ip, 'prev')` reverses that. [`rollback`](https://vedicreader.github.io/vpseasy/core.html#rollback) restores the image only. It does not restore the copied files or the data. [`wait_http`](https://vedicreader.github.io/vpseasy/core.html#wait_http) waits until the site answers after a deploy, and [`server_health`](https://vedicreader.github.io/vpseasy/core.html#server_health) reports memory, swap, load, disk and each container.
 
 [`Hetzner.servers`](https://vedicreader.github.io/vpseasy/core.html#hetzner.servers) lists your servers and [`Hetzner.delete`](https://vedicreader.github.io/vpseasy/core.html#hetzner.delete) removes one by name, as the second cell shows.
 
